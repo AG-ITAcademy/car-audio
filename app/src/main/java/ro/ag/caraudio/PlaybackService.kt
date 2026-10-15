@@ -2,8 +2,7 @@ package ro.ag.caraudio
 
 import android.app.PendingIntent
 import android.content.Intent
-import android.os.Handler
-import android.os.Looper
+import android.net.Uri
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -39,7 +38,6 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var session: MediaLibrarySession
     private val executor: ListeningExecutorService =
         MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(3))
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
         super.onCreate()
@@ -48,8 +46,15 @@ class PlaybackService : MediaLibraryService() {
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(15_000)
+        // An item can have a YouTube page URL as its URI. Here, just before the player reads
+        // it, change it to the audio stream URL. This runs on a background thread.
         val dataSource = ResolvingDataSource.Factory(http) { spec ->
-            spec.withAdditionalHeaders(YouTube.streamHeaders(spec.uri))
+            val real = if (YouTube.isYouTubePage(spec.uri)) {
+                spec.withUri(Uri.parse(YouTube.streamUrl(spec.uri.toString())))
+            } else {
+                spec
+            }
+            real.withAdditionalHeaders(YouTube.streamHeaders(real.uri))
         }
 
         player = ExoPlayer.Builder(this)
@@ -92,7 +97,10 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private inner class PlayerListener : Player.Listener {
-        /** Stream URLs expire after some hours. On an error, get a new URL one time. */
+        /**
+         * Stream URLs expire after some hours. On an error, get a new URL one time.
+         * If it fails again (for example a private video), go to the next item.
+         */
         private var retriedId: String? = null
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -106,22 +114,22 @@ class PlaybackService : MediaLibraryService() {
         override fun onPlayerError(error: PlaybackException) {
             Log.w(TAG, "Playback error", error)
             val item = player.currentMediaItem ?: return
-            if (retriedId == item.mediaId) return
-            retriedId = item.mediaId
             val index = player.currentMediaItemIndex
-            val position = player.currentPosition
-            executor.execute {
-                val fresh = runCatching { YouTube.resolve(item) }
-                    .onFailure { Log.w(TAG, "Cannot resolve ${item.mediaId} again", it) }
-                    .getOrNull() ?: return@execute
-                mainHandler.post {
-                    if (index >= player.mediaItemCount) return@post
-                    player.replaceMediaItem(index, fresh)
-                    player.seekTo(index, position)
+            if (retriedId == item.mediaId) {
+                if (player.hasNextMediaItem()) {
+                    player.seekToNextMediaItem()
                     player.prepare()
                     player.play()
                 }
+                return
             }
+            retriedId = item.mediaId
+            YouTube.invalidate(item.mediaId)
+            val position = player.currentPosition
+            player.replaceMediaItem(index, YouTube.lazy(item))
+            player.seekTo(index, position)
+            player.prepare()
+            player.play()
         }
     }
 
@@ -146,7 +154,10 @@ class PlaybackService : MediaLibraryService() {
                 ROOT -> listOf(folder(RECENT, "Recently played"), folder(SEARCH, "Last search"))
                 RECENT -> Library.recent
                 SEARCH -> Library.lastSearch
-                else -> emptyList()
+                // A playlist: load its videos.
+                else -> return executor.submit<LibraryResult<ImmutableList<MediaItem>>> {
+                    LibraryResult.ofItemList(ImmutableList.copyOf(Library.playlist(parentId)), params)
+                }
             }
             return immediate(LibraryResult.ofItemList(ImmutableList.copyOf(children), params))
         }
@@ -169,7 +180,7 @@ class PlaybackService : MediaLibraryService() {
             query: String,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<Void>> = executor.submit<LibraryResult<Void>> {
-            Library.lastSearch = YouTube.search(query)
+            Library.lastSearch = YouTube.search(query, YouTube.SearchType.PLAYLISTS)
             session.notifySearchResultChanged(browser, query, Library.lastSearch.size, params)
             LibraryResult.ofVoid()
         }
@@ -184,19 +195,41 @@ class PlaybackService : MediaLibraryService() {
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
             immediate(LibraryResult.ofItemList(ImmutableList.copyOf(Library.lastSearch), params))
 
-        /** Controllers send only the mediaId (the video URL). Find the audio stream here. */
+        /** Controllers send only the mediaId (the YouTube URL). Make playable items here. */
         override fun onAddMediaItems(
             mediaSession: MediaSession,
             controller: ControllerInfo,
             mediaItems: MutableList<MediaItem>,
         ): ListenableFuture<MutableList<MediaItem>> = executor.submit<MutableList<MediaItem>> {
-            val resolved = mediaItems.mapNotNull { item ->
-                runCatching { resolveRequest(item) }
+            val single = mediaItems.size == 1
+            val resolved = mediaItems.flatMap { item ->
+                runCatching { expand(item, single) }
                     .onFailure { Log.w(TAG, "Cannot resolve ${item.mediaId}", it) }
-                    .getOrNull()
+                    .getOrDefault(emptyList())
             }
             if (resolved.isEmpty()) throw IOException("No playable item")
             resolved.toMutableList()
+        }
+
+        /**
+         * In Android Auto, a tap on a video in a playlist folder sends only that video.
+         * Play the rest of the playlist after it.
+         */
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long,
+        ): ListenableFuture<MediaItemsWithStartPosition> {
+            if (mediaItems.size == 1 && controller.packageName != packageName) {
+                Library.playlistContaining(mediaItems[0].mediaId)?.let { (items, index) ->
+                    return immediate(
+                        MediaItemsWithStartPosition(items.map(YouTube::lazy), index, C.TIME_UNSET)
+                    )
+                }
+            }
+            return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
         }
 
         /** Bluetooth "play" when the app is not running: continue the last track. */
@@ -209,16 +242,25 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    /** A plain item, or a voice request from Android Auto ("play <something> on Car Audio"). */
-    private fun resolveRequest(item: MediaItem): MediaItem {
-        if (item.mediaId.isNotEmpty() && item.mediaId.startsWith("http")) {
-            return YouTube.resolve(item)
+    /**
+     * One request to one or more playable items: a video, a playlist (all its videos),
+     * or a voice request from Android Auto ("play <something> on Car Audio").
+     */
+    private fun expand(item: MediaItem, single: Boolean): List<MediaItem> {
+        val id = item.mediaId
+        if (id.startsWith("http")) {
+            if (Uri.parse(id).path == "/playlist") return Library.playlist(id).map(YouTube::lazy)
+            // For one item, get the metadata and stream now: a shared link has no title yet.
+            return listOf(if (single) YouTube.resolve(item) else YouTube.lazy(item))
         }
         val query = item.requestMetadata.searchQuery
-            ?: throw IOException("Unknown item ${item.mediaId}")
-        val results = YouTube.search(query)
-        Library.lastSearch = results
-        return YouTube.resolve(results.firstOrNull() ?: throw IOException("No result for $query"))
+            ?: throw IOException("Unknown item $id")
+        val playlists = YouTube.search(query, YouTube.SearchType.PLAYLISTS)
+        Library.lastSearch = playlists
+        playlists.firstOrNull()?.let { return Library.playlist(it.mediaId).map(YouTube::lazy) }
+        val video = YouTube.search(query, YouTube.SearchType.VIDEOS).firstOrNull()
+            ?: throw IOException("No result for $query")
+        return listOf(YouTube.resolve(video))
     }
 
     private fun folder(id: String, title: String): MediaItem =

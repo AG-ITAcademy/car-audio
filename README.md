@@ -24,7 +24,9 @@ Or from a PC with USB debugging: `adb install -r app-debug.apk`
 
 ## Use
 
-- Type a search, tap a result to play it. Tap **+** to add it to the queue.
+- Type a search. The app searches **Playlists** by default; tap **Videos** to search videos.
+- Tap a playlist to open it, then **Play all** or **Shuffle**. Tap ▶ on a playlist to play it at once.
+- Tap a video to play it. Tap **+** to add it to the queue.
 - In the YouTube app, tap **Share** > **Car Audio** to play that video.
 - Lock the screen: the audio continues. Controls are in the notification and on the lock screen.
 
@@ -37,7 +39,7 @@ Android Auto shows only apps from the Play Store, unless you allow unknown sourc
 3. Tap the menu (⋮) > **Developer settings** > enable **Unknown sources**.
 
 Then **Car Audio** shows in the car's app list, with **Recently played** and **Last search**.
-Voice search also works: "Play *something* on Car Audio".
+Voice search also works: "Play *something* on Car Audio". It plays the first playlist found.
 
 Without the step above, the audio still plays in the car through Bluetooth or through the
 Android Auto "now playing" screen of the last media app.

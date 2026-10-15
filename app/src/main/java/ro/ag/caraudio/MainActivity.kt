@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.clickable
@@ -23,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -37,11 +39,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -60,7 +64,12 @@ class MainActivity : ComponentActivity() {
     private var controller: MediaController? = null
 
     private var query by mutableStateOf("")
+    private var searchType by mutableStateOf(YouTube.SearchType.PLAYLISTS)
     private var results by mutableStateOf<List<MediaItem>>(emptyList())
+
+    /** The playlist that is open, and its videos (empty while they load). */
+    private var openPlaylist by mutableStateOf<MediaItem?>(null)
+    private var playlistVideos by mutableStateOf<List<MediaItem>>(emptyList())
     private var recent by mutableStateOf<List<MediaItem>>(emptyList())
     private var searching by mutableStateOf(false)
     private var message by mutableStateOf<String?>(null)
@@ -128,19 +137,56 @@ class MainActivity : ComponentActivity() {
     private fun search() {
         val q = query.trim()
         if (q.isEmpty()) return
+        val type = searchType
         searching = true
         message = null
+        openPlaylist = null
         lifecycleScope.launch {
-            runCatching { withContext(Dispatchers.IO) { YouTube.search(q) } }
+            runCatching { withContext(Dispatchers.IO) { YouTube.search(q, type) } }
                 .onSuccess { results = it; Library.lastSearch = it }
                 .onFailure { message = "Search failed: ${it.message}" }
             searching = false
         }
     }
 
+    private fun showPlaylist(playlist: MediaItem) {
+        openPlaylist = playlist
+        playlistVideos = emptyList()
+        searching = true
+        message = null
+        lifecycleScope.launch {
+            runCatching { withContext(Dispatchers.IO) { Library.playlist(playlist.mediaId) } }
+                .onSuccess { if (openPlaylist == playlist) playlistVideos = it }
+                .onFailure { message = "Cannot load the playlist: ${it.message}" }
+            searching = false
+        }
+    }
+
+    /** Play a list of videos, starting at [start]. With [shuffle], start at a random video. */
+    private fun playAll(videos: List<MediaItem>, start: Int = 0, shuffle: Boolean = false) {
+        val c = controller ?: return
+        if (videos.isEmpty()) return
+        message = "Loading…"
+        c.shuffleModeEnabled = shuffle
+        c.setMediaItems(videos, if (shuffle) videos.indices.random() else start, C.TIME_UNSET)
+        c.prepare()
+        c.play()
+    }
+
+    /** Play all videos of a playlist from the search results, without opening it. */
+    private fun playPlaylist(playlist: MediaItem) {
+        message = "Loading…"
+        lifecycleScope.launch {
+            runCatching { withContext(Dispatchers.IO) { Library.playlist(playlist.mediaId) } }
+                .onSuccess { playAll(it) }
+                .onFailure { message = "Cannot load the playlist: ${it.message}" }
+        }
+    }
+
     private fun play(item: MediaItem) {
         val c = controller ?: return
         message = "Loading…"
+        c.shuffleModeEnabled = false
         c.setMediaItem(item)
         c.prepare()
         c.play()
@@ -155,57 +201,141 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun Screen() {
+        BackHandler(enabled = openPlaylist != null) { openPlaylist = null }
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(12.dp, 12.dp, 12.dp, 0.dp),
                 placeholder = { Text("Search YouTube") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { search() }),
             )
+            Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                YouTube.SearchType.entries.forEach { type ->
+                    FilterChip(
+                        selected = searchType == type,
+                        onClick = {
+                            if (searchType != type) {
+                                searchType = type
+                                search()
+                            }
+                        },
+                        label = { Text(if (type == YouTube.SearchType.PLAYLISTS) "Playlists" else "Videos") },
+                    )
+                }
+            }
             if (searching) {
                 CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).padding(16.dp))
             }
             message?.let {
                 Text(it, Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.secondary)
             }
-            val list = results.ifEmpty { recent }
-            if (results.isEmpty() && recent.isNotEmpty()) {
-                Text("Recently played", Modifier.padding(16.dp, 8.dp), style = MaterialTheme.typography.titleSmall)
-            }
-            LazyColumn(Modifier.weight(1f)) {
-                items(list, key = { it.mediaId }) { item ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { play(item) }.padding(12.dp, 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AsyncImage(
-                            model = item.mediaMetadata.artworkUri,
-                            contentDescription = null,
-                            modifier = Modifier.size(width = 96.dp, height = 54.dp),
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                item.mediaMetadata.title?.toString().orEmpty(),
-                                maxLines = 2, overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                listOfNotNull(
-                                    item.mediaMetadata.artist?.toString(),
-                                    duration(item.mediaMetadata.extras?.getLong(YouTube.EXTRA_DURATION) ?: 0),
-                                ).joinToString(" · "),
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            )
+
+            val playlist = openPlaylist
+            if (playlist != null) {
+                PlaylistHeader(playlist)
+                LazyColumn(Modifier.weight(1f)) {
+                    items(playlistVideos.size, key = { playlistVideos[it].mediaId }) { index ->
+                        val video = playlistVideos[index]
+                        VideoRow(video, onClick = { playAll(playlistVideos, start = index) })
+                    }
+                }
+            } else {
+                val list = results.ifEmpty { recent }
+                if (results.isEmpty() && recent.isNotEmpty()) {
+                    Text("Recently played", Modifier.padding(16.dp, 8.dp), style = MaterialTheme.typography.titleSmall)
+                }
+                LazyColumn(Modifier.weight(1f)) {
+                    items(list, key = { it.mediaId }) { item ->
+                        if (item.mediaMetadata.isBrowsable == true) {
+                            PlaylistRow(item)
+                        } else {
+                            VideoRow(item, onClick = { play(item) })
                         }
-                        TextButton(onClick = { addToQueue(item) }) { Text("+", fontSize = 24.sp) }
                     }
                 }
             }
             nowPlaying?.let { PlayerBar(it) }
+        }
+    }
+
+    @Composable
+    private fun PlaylistHeader(playlist: MediaItem) {
+        Row(Modifier.fillMaxWidth().padding(4.dp, 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { openPlaylist = null }) { Text("←", fontSize = 22.sp) }
+            Text(
+                playlist.mediaMetadata.title?.toString().orEmpty(),
+                Modifier.weight(1f),
+                fontWeight = FontWeight.Bold,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { playAll(playlistVideos) }, enabled = playlistVideos.isNotEmpty()) {
+                Text("▶  Play all")
+            }
+            TextButton(onClick = { playAll(playlistVideos, shuffle = true) }, enabled = playlistVideos.isNotEmpty()) {
+                Text("🔀  Shuffle")
+            }
+        }
+        HorizontalDivider()
+    }
+
+    @Composable
+    private fun PlaylistRow(item: MediaItem) {
+        val count = item.mediaMetadata.extras?.getLong(YouTube.EXTRA_COUNT) ?: -1
+        ItemRow(
+            item,
+            subtitle = listOfNotNull(
+                item.mediaMetadata.artist?.toString(),
+                if (count >= 0) "$count videos" else null,
+            ).joinToString(" · "),
+            onClick = { showPlaylist(item) },
+        ) {
+            TextButton(onClick = { playPlaylist(item) }) { Text("▶", fontSize = 22.sp) }
+        }
+    }
+
+    @Composable
+    private fun VideoRow(item: MediaItem, onClick: () -> Unit) {
+        ItemRow(
+            item,
+            subtitle = listOfNotNull(
+                item.mediaMetadata.artist?.toString(),
+                duration(item.mediaMetadata.extras?.getLong(YouTube.EXTRA_DURATION) ?: 0),
+            ).joinToString(" · "),
+            onClick = onClick,
+        ) {
+            TextButton(onClick = { addToQueue(item) }) { Text("+", fontSize = 24.sp) }
+        }
+    }
+
+    @Composable
+    private fun ItemRow(item: MediaItem, subtitle: String, onClick: () -> Unit, action: @Composable () -> Unit) {
+        Row(
+            Modifier.fillMaxWidth().clickable(onClick = onClick).padding(12.dp, 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AsyncImage(
+                model = item.mediaMetadata.artworkUri,
+                contentDescription = null,
+                modifier = Modifier.size(width = 96.dp, height = 54.dp),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    item.mediaMetadata.title?.toString().orEmpty(),
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            action()
         }
     }
 

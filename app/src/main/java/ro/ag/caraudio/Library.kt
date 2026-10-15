@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import androidx.media3.common.MediaItem
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 /** Recently played items (kept on disk) and the last search results (kept in memory). */
 object Library {
@@ -17,6 +18,22 @@ object Library {
 
     @Volatile
     var lastSearch: List<MediaItem> = emptyList()
+
+    /** Playlists loaded in this run of the app: playlist URL to its videos. */
+    val playlists = ConcurrentHashMap<String, List<MediaItem>>()
+
+    /** The videos of a playlist, loaded only one time. Call from a background thread. */
+    fun playlist(url: String): List<MediaItem> =
+        playlists[url] ?: YouTube.playlist(url).also { playlists[url] = it }
+
+    /** A loaded playlist that contains this video, and the index of the video in it. */
+    fun playlistContaining(mediaId: String): Pair<List<MediaItem>, Int>? {
+        for (items in playlists.values) {
+            val index = items.indexOfFirst { it.mediaId == mediaId }
+            if (index >= 0) return items to index
+        }
+        return null
+    }
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences("library", Context.MODE_PRIVATE)
@@ -37,7 +54,9 @@ object Library {
     }
 
     fun find(mediaId: String): MediaItem? =
-        recent.firstOrNull { it.mediaId == mediaId } ?: lastSearch.firstOrNull { it.mediaId == mediaId }
+        recent.firstOrNull { it.mediaId == mediaId }
+            ?: lastSearch.firstOrNull { it.mediaId == mediaId }
+            ?: playlists.values.firstNotNullOfOrNull { list -> list.firstOrNull { it.mediaId == mediaId } }
 
     private fun toJson(items: List<MediaItem>): String = JSONArray().apply {
         items.forEach {
