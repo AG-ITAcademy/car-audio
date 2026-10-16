@@ -6,10 +6,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Process
+import android.provider.MediaStore
 import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.AudioAttributes
@@ -276,6 +279,10 @@ class PlaybackService : MediaLibraryService() {
             session: MediaSession,
             controller: ControllerInfo,
         ): MediaSession.ConnectionResult {
+            if (!isTrusted(controller)) {
+                Log.w(TAG, "Connection refused: ${controller.packageName}")
+                return MediaSession.ConnectionResult.reject()
+            }
             val result = super.onConnect(session, controller)
             val commands = result.availableSessionCommands.buildUpon()
                 .add(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
@@ -465,8 +472,11 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /**
-     * One request to one or more playable items: a video, a playlist (all its videos),
-     * or a voice request from Android Auto ("play <something> on Car Audio").
+     * One request to one or more playable items. See CONTROL.md for what other apps send.
+     * - a video URL: that video;
+     * - a playlist URL: all its videos;
+     * - "mood:<id>": the first playlist of that drive mood;
+     * - a search (voice, or another app): a playlist, or a song when the request says so.
      */
     private fun expand(item: MediaItem, single: Boolean): List<MediaItem> {
         val id = item.mediaId
@@ -475,15 +485,70 @@ class PlaybackService : MediaLibraryService() {
             // For one item, get the metadata and stream now: a shared link has no title yet.
             return listOf(if (single) YouTube.resolve(item) else YouTube.lazy(item))
         }
-        val query = item.requestMetadata.searchQuery
-            ?: throw IOException("Unknown item $id")
+        if (id.startsWith(MOOD_PREFIX)) {
+            val mood = Moods.byId(id.removePrefix(MOOD_PREFIX)) ?: throw IOException("Unknown mood $id")
+            return playFirstPlaylist(Library.moodPlaylists(mood), mood.title)
+        }
+        val request = item.requestMetadata
+        val query = request.searchQuery ?: throw IOException("Unknown item $id")
+        return playSearch(query, request.extras ?: Bundle.EMPTY)
+    }
+
+    /**
+     * A search request. The standard Android search extras say what kind of thing the
+     * user wants (EXTRA_MEDIA_FOCUS) and can give the artist and title separately.
+     * A song: that song, then the other songs found. Anything else: the first playlist.
+     * An empty search ("play music"): the last song played.
+     */
+    private fun playSearch(query: String, extras: Bundle): List<MediaItem> {
+        val focus = extras.getString(MediaStore.EXTRA_MEDIA_FOCUS)
+        val title = extras.getString(MediaStore.EXTRA_MEDIA_TITLE)
+        val artist = extras.getString(MediaStore.EXTRA_MEDIA_ARTIST)
+        val words = listOfNotNull(artist, title).joinToString(" ").ifBlank { query }.trim()
+        Log.i(TAG, "Search request: \"$words\" (focus=$focus)")
+
+        if (words.isEmpty()) {
+            val last = Library.recent.firstOrNull() ?: throw IOException("Nothing played yet")
+            return listOf(YouTube.resolve(last))
+        }
         val artistsOnly = Library.artistsOnly
-        val playlists = YouTube.search(query, YouTube.SearchType.PLAYLISTS, artistsOnly)
+        if (focus == MediaStore.Audio.Media.ENTRY_CONTENT_TYPE) {
+            val songs = YouTube.search(words, YouTube.SearchType.VIDEOS, artistsOnly)
+            Library.lastSearch = songs
+            val first = songs.firstOrNull() ?: throw IOException("No song for $words")
+            return listOf(YouTube.resolve(first)) + songs.drop(1).map(YouTube::lazy)
+        }
+        val playlists = YouTube.search(words, YouTube.SearchType.PLAYLISTS, artistsOnly)
         Library.lastSearch = playlists
-        playlists.firstOrNull()?.let { return Library.playlist(it.mediaId).map(YouTube::lazy) }
-        val video = YouTube.search(query, YouTube.SearchType.VIDEOS, artistsOnly).firstOrNull()
-            ?: throw IOException("No result for $query")
+        if (playlists.isNotEmpty()) return playFirstPlaylist(playlists, words)
+        val video = YouTube.search(words, YouTube.SearchType.VIDEOS, artistsOnly).firstOrNull()
+            ?: throw IOException("No result for $words")
         return listOf(YouTube.resolve(video))
+    }
+
+    /** The videos of the first playlist that has any (after the "Artists only" filter). */
+    private fun playFirstPlaylist(playlists: List<MediaItem>, what: String): List<MediaItem> {
+        for (playlist in playlists.take(3)) {
+            val videos = Library.playlist(playlist.mediaId)
+            if (videos.isNotEmpty()) return videos.map(YouTube::lazy)
+        }
+        throw IOException("No playable playlist for $what")
+    }
+
+    /**
+     * Which apps may control playback: this app, the apps in [TRUSTED_APPS] (Android
+     * Auto, Google Assistant, RoadGuide) and apps that are part of the phone's system
+     * (System UI, Bluetooth, the media button handler). Other installed apps are refused.
+     */
+    private fun isTrusted(controller: ControllerInfo): Boolean {
+        val pkg = controller.packageName
+        if (pkg == packageName || pkg in TRUSTED_APPS) return true
+        if (pkg == LEGACY_CONTROLLER) return true
+        if (controller.uid == Process.SYSTEM_UID) return true
+        return runCatching {
+            val flags = packageManager.getApplicationInfo(pkg, 0).flags
+            flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+        }.getOrDefault(false)
     }
 
     /**
@@ -581,7 +646,18 @@ class PlaybackService : MediaLibraryService() {
         private const val RECENT = "recent"
         private const val SEARCH = "search"
         private const val MOODS = "moods"
-        private const val MOOD_PREFIX = "mood:"
+        const val MOOD_PREFIX = "mood:"
+
+        /** The name media3 gives to platform controllers whose app is not known. */
+        private const val LEGACY_CONTROLLER = "android.media.session.MediaController"
+
+        /** Apps (not part of the system) that may control Car Audio. */
+        private val TRUSTED_APPS = setOf(
+            "ro.roadguide",                                // RoadGuide drive assistant
+            "com.google.android.projection.gearhead",      // Android Auto
+            "com.google.android.googlequicksearchbox",     // Google app / Assistant
+            "com.google.android.apps.googleassistant",     // Google Assistant
+        )
         const val CMD_SHUFFLE = "ro.ag.caraudio.SHUFFLE"
         const val CMD_REPEAT = "ro.ag.caraudio.REPEAT"
 

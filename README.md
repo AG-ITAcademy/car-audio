@@ -30,6 +30,11 @@ Or from a PC with USB debugging: `adb install -r app-debug.apk`
 
 
 
+## Control from other apps
+
+Other trusted apps on the phone (for example the RoadGuide drive assistant) can play a
+song, a playlist or a drive mood: see [CONTROL.md](CONTROL.md).
+
 ## Design
 
 The app uses **Nightline**, its own design system: see [DESIGN.md](DESIGN.md).
