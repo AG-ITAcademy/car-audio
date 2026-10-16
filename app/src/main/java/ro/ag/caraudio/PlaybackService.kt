@@ -487,7 +487,18 @@ class PlaybackService : MediaLibraryService() {
         }
         if (id.startsWith(MOOD_PREFIX)) {
             val mood = Moods.byId(id.removePrefix(MOOD_PREFIX)) ?: throw IOException("Unknown mood $id")
-            return playFirstPlaylist(Library.moodPlaylists(mood), mood.title)
+            val playlists = try {
+                Library.moodPlaylists(mood)
+            } catch (e: Exception) {
+                Log.w(TAG, "Playlist search failed for mood ${mood.id}", e)
+                emptyList()
+            }
+            return PlaylistPicker.forMood(
+                playlists.map { it.mediaId }, mood.title,
+                load = ::loadPlaylist,
+                searchSongs = { searchSongs(mood.query) },
+                onFailure = ::logPlaylistFailure,
+            )
         }
         val request = item.requestMetadata
         val query = request.searchQuery ?: throw IOException("Unknown item $id")
@@ -520,18 +531,33 @@ class PlaybackService : MediaLibraryService() {
         }
         val playlists = YouTube.search(words, YouTube.SearchType.PLAYLISTS, artistsOnly)
         Library.lastSearch = playlists
-        if (playlists.isNotEmpty()) return playFirstPlaylist(playlists, words)
-        val video = YouTube.search(words, YouTube.SearchType.VIDEOS, artistsOnly).firstOrNull()
-            ?: throw IOException("No result for $words")
-        return listOf(YouTube.resolve(video))
+        if (playlists.isEmpty()) {
+            val video = YouTube.search(words, YouTube.SearchType.VIDEOS, artistsOnly).firstOrNull()
+                ?: throw IOException("No result for $words")
+            return listOf(YouTube.resolve(video))
+        }
+        return PlaylistPicker.forSearch(
+            playlists.map { it.mediaId }, words,
+            load = ::loadPlaylist,
+            searchVideos = { searchSongs(words) },
+            onFailure = ::logPlaylistFailure,
+        )
     }
 
-    /** The videos of the first playlist that has any (after the "Artists only" filter). */
-    private fun playFirstPlaylist(playlists: List<MediaItem>, what: String): List<MediaItem> {
-        for (playlist in playlists.take(3)) {
-            val videos = Library.playlist(playlist.mediaId)
-            if (videos.isNotEmpty()) return videos.map(YouTube::lazy)
-        }
+    /** The videos of a playlist, ready for the player. Throws if the playlist cannot load. */
+    private fun loadPlaylist(url: String): List<MediaItem> = Library.playlist(url).map(YouTube::lazy)
+
+    /**
+     * Songs for some words (a video search). The player gets each audio stream when the
+     * song starts, and skips a song that cannot play.
+     */
+    private fun searchSongs(words: String): List<MediaItem> =
+        YouTube.search(words, YouTube.SearchType.VIDEOS, Library.artistsOnly).map(YouTube::lazy)
+
+    private fun logPlaylistFailure(url: String, e: Exception) {
+        Log.w(TAG, "Cannot load playlist $url, trying the next one", e)
+    }
+
         throw IOException("No playable playlist for $what")
     }
 

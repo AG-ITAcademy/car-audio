@@ -48,6 +48,17 @@ android {
         noCompress += listOf("jpg", "png")
     }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+        unitTests.all { test ->
+            test.testLogging {
+                events("passed", "failed", "skipped")
+                showStandardStreams = true
+                exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            }
+        }
+    }
+
     buildFeatures {
         compose = true
     }
@@ -84,4 +95,6 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    testImplementation("junit:junit:4.13.2")
 }

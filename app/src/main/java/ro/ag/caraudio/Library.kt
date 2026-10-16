@@ -29,6 +29,7 @@ object Library {
 
     /**
      * The videos of a playlist, loaded only one time. Call from a background thread.
+     * A playlist that throws is not cached, so a later request tries it again.
      * [onPage] gets the videos page by page (or all at once, if they are already loaded).
      */
     fun playlist(url: String, onPage: ((List<MediaItem>) -> Unit)? = null): List<MediaItem> {

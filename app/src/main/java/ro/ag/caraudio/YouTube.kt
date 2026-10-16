@@ -1,6 +1,7 @@
 package ro.ag.caraudio
 
 import android.net.Uri
+import android.util.Log
 import android.os.Bundle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -93,7 +94,13 @@ object YouTube {
         var page: Page? = info.nextPage
         var loaded = info.relatedItems.size
         while (Page.isValid(page) && loaded < MAX_PLAYLIST_ITEMS) {
-            val more = PlaylistInfo.getMoreItems(service, url, page)
+            // A later page that fails does not lose the pages that loaded.
+            val more = try {
+                PlaylistInfo.getMoreItems(service, url, page)
+            } catch (e: Exception) {
+                Log.w("CarAudio", "Cannot load more of playlist $url; keeping ${all.size} videos", e)
+                break
+            }
             add(more.items)
             loaded += more.items.size
             page = more.nextPage
