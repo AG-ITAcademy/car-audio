@@ -8,10 +8,16 @@ For personal use only. Do not publish it.
 
 ## Get the APK
 
-Each push to `main` builds the APK with GitHub Actions.
+### ⬇️ [Download the latest APK](https://github.com/AG-ITAcademy/car-audio/releases/download/latest/app-debug.apk)
 
-- On the phone: open the **Releases** page of this repo, release **Latest build**, and download `app-debug.apk`.
-- Or: **Actions** > latest run > artifact `car-audio-apk` (a zip file).
+This link does not change. It always gives the newest build.
+You must be signed in to GitHub, because the repo is private.
+
+Each push to `main` builds the APK with GitHub Actions and replaces the file at this link.
+Other places to get it:
+
+- The release page: [Latest build](https://github.com/AG-ITAcademy/car-audio/releases/tag/latest)
+- **Actions** > latest run > artifact `car-audio-apk` (a zip file)
 
 The APK is signed with the fixed key in `app/debug.keystore`, so a new build installs over the old one.
 
@@ -21,6 +27,13 @@ The APK is signed with the fixed key in `app/debug.keystore`, so a new build ins
 2. Tap **Install**. If Play Protect warns you, tap **More details** > **Install anyway**.
 
 Or from a PC with USB debugging: `adb install -r app-debug.apk`
+
+If Android Auto does not show the app (no "Unknown sources" setting), install it from the PC
+with the Play Store as the installer:
+
+```
+adb install -r -i com.android.vending app-debug.apk
+```
 
 ## Use
 
