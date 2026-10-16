@@ -66,6 +66,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
 import coil.compose.AsyncImage
 import com.google.common.util.concurrent.ListenableFuture
@@ -238,19 +240,31 @@ class MainActivity : ComponentActivity() {
         message = "Added to queue"
     }
 
-    /** Next item. Always plays, also after an error. */
-    private fun next() {
-        val c = controller ?: return
-        if (!c.hasNextMediaItem()) return
-        c.seekToNextMediaItem()
-        resume(c)
-    }
+    /**
+     * Next item. The playback service decides with the real queue (see PlaybackService
+     * onCustomCommand), and it always continues playback.
+     */
+    private fun next() = sendSkip(PlaybackService.CMD_NEXT)
 
     /** Start of the item; a second press within 4 seconds goes to the previous item. */
-    private fun previous() {
+    private fun previous() = sendSkip(PlaybackService.CMD_PREVIOUS)
+
+    private fun sendSkip(action: String) {
         val c = controller ?: return
-        c.seekToPrevious()
-        resume(c)
+        val future = c.sendCustomCommand(SessionCommand(action, Bundle.EMPTY), Bundle.EMPTY)
+        future.addListener({
+            val result = runCatching { future.get() }.getOrNull()
+            if (result == null || result.resultCode != SessionResult.RESULT_SUCCESS) {
+                message = "Skip failed (code ${result?.resultCode})"
+                return@addListener
+            }
+            val extras = result.extras
+            if (!extras.getBoolean(PlaybackService.EXTRA_MOVED, true)) {
+                val index = extras.getInt(PlaybackService.EXTRA_INDEX) + 1
+                val count = extras.getInt(PlaybackService.EXTRA_COUNT)
+                message = "No next song in the queue ($index / $count)"
+            }
+        }, MoreExecutors.directExecutor())
     }
 
     private fun playPause() {

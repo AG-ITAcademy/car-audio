@@ -30,6 +30,8 @@ import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSession.ControllerInfo
 import androidx.media3.session.MediaSession.MediaItemsWithStartPosition
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.ListeningExecutorService
@@ -219,6 +221,49 @@ class PlaybackService : MediaLibraryService() {
 
     private inner class LibraryCallback : MediaLibrarySession.Callback {
 
+        /** Our own app also gets the NEXT and PREVIOUS commands (see [onCustomCommand]). */
+        override fun onConnect(
+            session: MediaSession,
+            controller: ControllerInfo,
+        ): MediaSession.ConnectionResult {
+            val result = super.onConnect(session, controller)
+            if (controller.packageName != packageName) return result
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(
+                    result.availableSessionCommands.buildUpon()
+                        .add(SessionCommand(CMD_NEXT, Bundle.EMPTY))
+                        .add(SessionCommand(CMD_PREVIOUS, Bundle.EMPTY))
+                        .build()
+                )
+                .setAvailablePlayerCommands(result.availablePlayerCommands)
+                .build()
+        }
+
+        /**
+         * Next and previous from the app's buttons. The service decides with the real
+         * queue, and returns the queue position so that the app can show it.
+         */
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<SessionResult> {
+            val p = session.player
+            val moved = when (customCommand.customAction) {
+                CMD_NEXT -> p.hasNextMediaItem().also { p.seekToNext() }
+                CMD_PREVIOUS -> true.also { p.seekToPrevious() }
+                else -> return immediate(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
+            }
+            Log.i(TAG, "${customCommand.customAction}: moved=$moved, item ${p.currentMediaItemIndex + 1} of ${p.mediaItemCount}")
+            val extras = Bundle().apply {
+                putBoolean(EXTRA_MOVED, moved)
+                putInt(EXTRA_INDEX, p.currentMediaItemIndex)
+                putInt(EXTRA_COUNT, p.mediaItemCount)
+            }
+            return immediate(SessionResult(SessionResult.RESULT_SUCCESS, extras))
+        }
+
         override fun onGetLibraryRoot(
             session: MediaLibrarySession,
             browser: ControllerInfo,
@@ -407,6 +452,11 @@ class PlaybackService : MediaLibraryService() {
 
     companion object {
         private const val TAG = "CarAudio"
+        const val CMD_NEXT = "ro.ag.caraudio.NEXT"
+        const val CMD_PREVIOUS = "ro.ag.caraudio.PREVIOUS"
+        const val EXTRA_MOVED = "moved"
+        const val EXTRA_INDEX = "index"
+        const val EXTRA_COUNT = "count"
         private const val DOUBLE_BACK_MS = 4_000L
         private const val TRACK_CHANNEL = "track_popup"
         private const val TRACK_NOTIFICATION_ID = 2
