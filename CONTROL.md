@@ -75,8 +75,9 @@ Register a `MediaControllerCompat.Callback`:
 
 ## Errors
 
-When nothing can play (no result, all songs filtered out, no network), the playback state
-becomes `STATE_ERROR` with an error message. Logcat: `adb logcat -s CarAudio`.
+When nothing can play (no result, all songs filtered out, no network), playback does not
+start and the state does not change to `STATE_PLAYING`. Treat "no `STATE_PLAYING` within
+about 15 seconds" as a failure. The reason is in logcat: `adb logcat -s CarAudio`.
 
 ## Audio focus
 
