@@ -59,7 +59,15 @@ class PlaybackService : MediaLibraryService() {
         // it, change it to the audio stream URL. This runs on a background thread.
         val dataSource = ResolvingDataSource.Factory(http) { spec ->
             val real = if (YouTube.isYouTubePage(spec.uri)) {
-                spec.withUri(Uri.parse(YouTube.streamUrl(spec.uri.toString())))
+                val streamUrl = try {
+                    YouTube.streamUrl(spec.uri.toString())
+                } catch (e: IOException) {
+                    throw e
+                } catch (e: Exception) {
+                    // For example, the video is private, removed or blocked in this country.
+                    throw IOException("Cannot get the audio of ${spec.uri}", e)
+                }
+                spec.withUri(Uri.parse(streamUrl))
             } else {
                 spec
             }
@@ -142,51 +150,70 @@ class PlaybackService : MediaLibraryService() {
             continuePlayback()
         }
 
-        /** After an error the player stops. A skip must start it again. */
+        /** A skip always plays. After an error the player stops, so prepare it again. */
         private fun continuePlayback() {
-            if (playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED) {
-                prepare()
-                play()
-            }
+            if (playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED) prepare()
+            play()
         }
     }
 
     private inner class PlayerListener : Player.Listener {
-        /**
-         * Stream URLs expire after some hours. On an error, get a new URL one time.
-         * If it fails again (for example a private video), go to the next item.
-         */
+        /** The item that already had one retry after an HTTP error. */
         private var retriedId: String? = null
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             mediaItem ?: return
             Library.addRecent(mediaItem)
             if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) showTrackPopup(mediaItem)
+            prefetchNeighbours()
+        }
+
+        /**
+         * Get the audio address of the next and previous items now, so that a skip
+         * starts at once and not after 2-5 seconds.
+         */
+        private fun prefetchNeighbours() {
+            val neighbours = listOf(player.nextMediaItemIndex, player.previousMediaItemIndex)
+                .filter { it != C.INDEX_UNSET }
+                .map { player.getMediaItemAt(it).mediaId }
+                .filter { it.startsWith("http") }
+            executor.execute {
+                neighbours.forEach { id ->
+                    runCatching { YouTube.streamUrl(id) }
+                        .onFailure { Log.i(TAG, "Prefetch failed for $id: ${it.message}") }
+                }
+            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) retriedId = null
         }
 
+        /**
+         * An HTTP error usually means that the stream URL expired: get a new one and try
+         * again, one time. Any other error (private, removed or blocked video) does not
+         * go away with a retry: go to the next item at once.
+         */
         override fun onPlayerError(error: PlaybackException) {
-            Log.w(TAG, "Playback error", error)
+            Log.w(TAG, "Playback error ${error.errorCodeName}", error)
             val item = player.currentMediaItem ?: return
             val index = player.currentMediaItemIndex
-            if (retriedId == item.mediaId) {
-                if (player.hasNextMediaItem()) {
-                    player.seekToNextMediaItem()
-                    player.prepare()
-                    player.play()
-                }
+            val httpError = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+            if (httpError && retriedId != item.mediaId) {
+                retriedId = item.mediaId
+                YouTube.invalidate(item.mediaId)
+                val position = player.currentPosition
+                player.replaceMediaItem(index, YouTube.lazy(item))
+                player.seekTo(index, position)
+                player.prepare()
+                player.play()
                 return
             }
-            retriedId = item.mediaId
-            YouTube.invalidate(item.mediaId)
-            val position = player.currentPosition
-            player.replaceMediaItem(index, YouTube.lazy(item))
-            player.seekTo(index, position)
-            player.prepare()
-            player.play()
+            if (player.hasNextMediaItem()) {
+                player.seekToNextMediaItem()
+                player.prepare()
+                player.play()
+            }
         }
     }
 

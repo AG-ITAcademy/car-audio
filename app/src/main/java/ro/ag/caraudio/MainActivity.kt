@@ -11,10 +11,13 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,9 +28,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -38,11 +46,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -226,10 +238,69 @@ class MainActivity : ComponentActivity() {
         message = "Added to queue"
     }
 
+    /** Next item. Always plays, also after an error. */
+    private fun next() {
+        val c = controller ?: return
+        if (!c.hasNextMediaItem()) return
+        c.seekToNextMediaItem()
+        resume(c)
+    }
+
+    /** Start of the item; a second press within 4 seconds goes to the previous item. */
+    private fun previous() {
+        val c = controller ?: return
+        c.seekToPrevious()
+        resume(c)
+    }
+
+    private fun playPause() {
+        val c = controller ?: return
+        message = null
+        if (c.isPlaying) c.pause() else resume(c)
+    }
+
+    private fun resume(c: Player) {
+        if (c.playbackState == Player.STATE_IDLE || c.playbackState == Player.STATE_ENDED) c.prepare()
+        c.play()
+    }
+
     @Composable
     private fun Screen() {
         BackHandler(enabled = openPlaylist != null) { openPlaylist = null }
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+            val playlist = openPlaylist
+            if (playlist == null) SearchBar()
+            if (searching) {
+                CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).padding(16.dp))
+            }
+            message?.let {
+                Text(it, Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.secondary)
+            }
+
+            if (playlist != null) {
+                PlaylistScreen(playlist)
+            } else {
+                val list = results.ifEmpty { recent }
+                if (results.isEmpty() && recent.isNotEmpty()) {
+                    Text("Recently played", Modifier.padding(16.dp, 8.dp), style = MaterialTheme.typography.titleSmall)
+                }
+                LazyColumn(Modifier.weight(1f)) {
+                    items(list, key = { it.mediaId }) { item ->
+                        if (item.mediaMetadata.isBrowsable == true) {
+                            PlaylistRow(item)
+                        } else {
+                            VideoRow(item, onClick = { play(item) })
+                        }
+                    }
+                }
+                nowPlaying?.let { PlayerBar(it) }
+            }
+        }
+    }
+
+    @Composable
+    private fun SearchBar() {
+        Column {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -259,45 +330,97 @@ class MainActivity : ComponentActivity() {
                     onClick = {
                         artistsOnly = !artistsOnly
                         Library.artistsOnly = artistsOnly
-                        val playlist = openPlaylist
                         search()
-                        if (playlist != null) showPlaylist(playlist)
                     },
                     label = { Text("Artists only") },
                 )
             }
-            if (searching) {
-                CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).padding(16.dp))
-            }
-            message?.let {
-                Text(it, Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.secondary)
-            }
+        }
+    }
 
-            val playlist = openPlaylist
-            if (playlist != null) {
-                PlaylistHeader(playlist)
-                LazyColumn(Modifier.weight(1f)) {
-                    items(playlistVideos.size, key = { playlistVideos[it].mediaId }) { index ->
-                        val video = playlistVideos[index]
-                        VideoRow(video, onClick = { playAll(playlistVideos, start = index) })
-                    }
+    /**
+     * An open playlist: the song that plays now (large), the controls, and the songs
+     * of the playlist. The song that plays now is marked in the list.
+     */
+    @Composable
+    private fun androidx.compose.foundation.layout.ColumnScope.PlaylistScreen(playlist: MediaItem) {
+        PlaylistHeader(playlist)
+        nowPlaying?.let { NowPlayingCard(it) }
+        Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { playAll(playlistVideos) }, enabled = playlistVideos.isNotEmpty()) {
+                Text("▶  Play all")
+            }
+            TextButton(onClick = { playAll(playlistVideos, shuffle = true) }, enabled = playlistVideos.isNotEmpty()) {
+                Text("🔀  Shuffle")
+            }
+        }
+        HorizontalDivider()
+
+        val current = playlistVideos.indexOfFirst { it.mediaId == nowPlaying?.mediaId }
+        val listState = rememberLazyListState()
+        LaunchedEffect(current) {
+            if (current >= 0) listState.animateScrollToItem(current)
+        }
+        LazyColumn(Modifier.weight(1f), state = listState) {
+            items(playlistVideos.size, key = { playlistVideos[it].mediaId }) { index ->
+                VideoRow(
+                    playlistVideos[index],
+                    onClick = { playAll(playlistVideos, start = index) },
+                    current = index == current,
+                )
+            }
+        }
+    }
+
+    /** Large thumbnail, title, artist and big buttons for the song that plays now. */
+    @Composable
+    private fun NowPlayingCard(item: MediaItem) {
+        Column(
+            Modifier.fillMaxWidth().padding(16.dp, 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            AsyncImage(
+                model = YouTube.largeThumbnail(item.mediaId) ?: item.mediaMetadata.artworkUri,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth(0.85f)
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+            )
+            Spacer(Modifier.size(8.dp))
+            Text(
+                item.mediaMetadata.title?.toString().orEmpty(),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                listOfNotNull(
+                    item.mediaMetadata.artist?.toString(),
+                    if (queueSize > 1) "${queueIndex + 1} / $queueSize" else null,
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.secondary,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilledTonalIconButton(onClick = ::previous, modifier = Modifier.size(64.dp)) {
+                    Text("⏮", fontSize = 26.sp)
                 }
-            } else {
-                val list = results.ifEmpty { recent }
-                if (results.isEmpty() && recent.isNotEmpty()) {
-                    Text("Recently played", Modifier.padding(16.dp, 8.dp), style = MaterialTheme.typography.titleSmall)
+                FilledIconButton(onClick = ::playPause, modifier = Modifier.size(80.dp), shape = CircleShape) {
+                    Text(if (isPlaying) "❚❚" else "▶", fontSize = 30.sp)
                 }
-                LazyColumn(Modifier.weight(1f)) {
-                    items(list, key = { it.mediaId }) { item ->
-                        if (item.mediaMetadata.isBrowsable == true) {
-                            PlaylistRow(item)
-                        } else {
-                            VideoRow(item, onClick = { play(item) })
-                        }
-                    }
+                FilledTonalIconButton(onClick = ::next, modifier = Modifier.size(64.dp)) {
+                    Text("⏭", fontSize = 26.sp)
                 }
             }
-            nowPlaying?.let { PlayerBar(it) }
         }
     }
 
@@ -312,15 +435,6 @@ class MainActivity : ComponentActivity() {
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
         }
-        Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { playAll(playlistVideos) }, enabled = playlistVideos.isNotEmpty()) {
-                Text("▶  Play all")
-            }
-            TextButton(onClick = { playAll(playlistVideos, shuffle = true) }, enabled = playlistVideos.isNotEmpty()) {
-                Text("🔀  Shuffle")
-            }
-        }
-        HorizontalDivider()
     }
 
     @Composable
@@ -339,9 +453,10 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun VideoRow(item: MediaItem, onClick: () -> Unit) {
+    private fun VideoRow(item: MediaItem, onClick: () -> Unit, current: Boolean = false) {
         ItemRow(
             item,
+            current = current,
             subtitle = listOfNotNull(
                 item.mediaMetadata.artist?.toString(),
                 duration(item.mediaMetadata.extras?.getLong(YouTube.EXTRA_DURATION) ?: 0),
@@ -353,9 +468,19 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun ItemRow(item: MediaItem, subtitle: String, onClick: () -> Unit, action: @Composable () -> Unit) {
+    private fun ItemRow(
+        item: MediaItem,
+        subtitle: String,
+        onClick: () -> Unit,
+        current: Boolean = false,
+        action: @Composable () -> Unit,
+    ) {
         Row(
-            Modifier.fillMaxWidth().clickable(onClick = onClick).padding(12.dp, 8.dp),
+            Modifier
+                .fillMaxWidth()
+                .background(if (current) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)
+                .clickable(onClick = onClick)
+                .padding(12.dp, 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AsyncImage(
@@ -366,7 +491,8 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    item.mediaMetadata.title?.toString().orEmpty(),
+                    (if (current) "▶ " else "") + item.mediaMetadata.title?.toString().orEmpty(),
+                    fontWeight = if (current) FontWeight.Bold else null,
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
                 Text(
@@ -401,13 +527,9 @@ class MainActivity : ComponentActivity() {
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
-            TextButton(onClick = { controller?.seekToPrevious() }) { Text("⏮", fontSize = 22.sp) }
-            TextButton(onClick = {
-                val c = controller ?: return@TextButton
-                if (c.isPlaying) c.pause() else c.play()
-                message = null
-            }) { Text(if (isPlaying) "❚❚" else "▶", fontSize = 22.sp) }
-            TextButton(onClick = { controller?.seekToNext() }) { Text("⏭", fontSize = 22.sp) }
+            TextButton(onClick = ::previous) { Text("⏮", fontSize = 22.sp) }
+            TextButton(onClick = ::playPause) { Text(if (isPlaying) "❚❚" else "▶", fontSize = 22.sp) }
+            TextButton(onClick = ::next) { Text("⏭", fontSize = 22.sp) }
         }
     }
 

@@ -107,6 +107,13 @@ object YouTube {
      */
     fun lazy(item: MediaItem): MediaItem = item.buildUpon().setUri(item.mediaId).build()
 
+    /** A large thumbnail (480x360) of a video, or null if the URL has no video ID. */
+    fun largeThumbnail(videoUrl: String): String? {
+        val uri = Uri.parse(videoUrl)
+        val id = if (uri.host == "youtu.be") uri.lastPathSegment else uri.getQueryParameter("v")
+        return id?.let { "https://i.ytimg.com/vi/$it/hqdefault.jpg" }
+    }
+
     fun isYouTubePage(uri: Uri): Boolean {
         val host = uri.host ?: return false
         return host == "youtu.be" || host == "youtube.com" || host.endsWith(".youtube.com")
