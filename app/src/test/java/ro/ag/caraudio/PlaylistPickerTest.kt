@@ -16,7 +16,7 @@ class PlaylistPickerTest {
     @Test
     fun firstPlaylistThrows_secondPlaylistPlays() {
         val failed = mutableListOf<String>()
-        val result = PlaylistPicker.forMood(
+        val result = PlaylistPicker.forMood<String>(
             urls, "Chill Cruise",
             load = { url -> if (url == "p1") broken() else listOf("$url-a", "$url-b") },
             searchSongs = { fail("no fallback expected"); emptyList() },
@@ -28,7 +28,7 @@ class PlaylistPickerTest {
 
     @Test
     fun emptyPlaylistIsSkipped() {
-        val result = PlaylistPicker.forSearch(
+        val result = PlaylistPicker.forSearch<String>(
             urls, "Queen",
             load = { url -> if (url == "p1") emptyList() else listOf("$url-a") },
             searchVideos = { fail("no fallback expected"); emptyList() },
@@ -39,7 +39,7 @@ class PlaylistPickerTest {
     @Test
     fun atMostFivePlaylistsAreTried() {
         val tried = mutableListOf<String>()
-        PlaylistPicker.forSearch(
+        PlaylistPicker.forSearch<String>(
             urls, "x",
             load = { url -> tried += url; broken() },
             searchVideos = { listOf("v1") },
@@ -49,7 +49,7 @@ class PlaylistPickerTest {
 
     @Test
     fun allPlaylistsThrow_moodPlaysAllSongsOfTheVideoSearch() {
-        val result = PlaylistPicker.forMood(
+        val result = PlaylistPicker.forMood<String>(
             urls, "Chill Cruise",
             load = { broken() },
             searchSongs = { listOf("v1", "v2", "v3") },
@@ -59,7 +59,7 @@ class PlaylistPickerTest {
 
     @Test
     fun allPlaylistsThrow_searchPlaysTheFirstVideo() {
-        val result = PlaylistPicker.forSearch(
+        val result = PlaylistPicker.forSearch<String>(
             urls, "Chill Cruise",
             load = { broken() },
             searchVideos = { listOf("v1", "v2", "v3") },
@@ -69,7 +69,7 @@ class PlaylistPickerTest {
 
     @Test
     fun noPlaylistsAtAll_usesTheFallback() {
-        val result = PlaylistPicker.forMood(
+        val result = PlaylistPicker.forMood<String>(
             emptyList(), "Night Drive",
             load = { fail("nothing to load"); emptyList<String>() },
             searchSongs = { listOf("v1") },
@@ -80,7 +80,7 @@ class PlaylistPickerTest {
     @Test
     fun fallbackAlsoFails_throwsNoPlayablePlaylist() {
         try {
-            PlaylistPicker.forMood(
+            PlaylistPicker.forMood<String>(
                 urls, "Chill Cruise",
                 load = { broken() },
                 searchSongs = { throw IOException("no network") },
@@ -95,7 +95,7 @@ class PlaylistPickerTest {
     @Test
     fun fallbackFindsNothing_throwsNoPlayablePlaylist() {
         try {
-            PlaylistPicker.forSearch(urls, "Queen", load = { broken() }, searchVideos = { emptyList() })
+            PlaylistPicker.forSearch<String>(urls, "Queen", load = { broken() }, searchVideos = { emptyList() })
             fail("expected an IOException")
         } catch (e: IOException) {
             assertEquals("No playable playlist for Queen", e.message)
