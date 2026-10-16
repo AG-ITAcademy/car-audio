@@ -27,11 +27,18 @@ object Library {
     /** Playlists loaded in this run of the app: "filter|playlist URL" to its videos. */
     private val playlists = ConcurrentHashMap<String, List<MediaItem>>()
 
-    /** The videos of a playlist, loaded only one time. Call from a background thread. */
-    fun playlist(url: String): List<MediaItem> {
+    /**
+     * The videos of a playlist, loaded only one time. Call from a background thread.
+     * [onPage] gets the videos page by page (or all at once, if they are already loaded).
+     */
+    fun playlist(url: String, onPage: ((List<MediaItem>) -> Unit)? = null): List<MediaItem> {
         val filter = artistsOnly
         val key = "$filter|$url"
-        return playlists[key] ?: YouTube.playlist(url, filter).also { playlists[key] = it }
+        playlists[key]?.let { cached ->
+            onPage?.invoke(cached)
+            return cached
+        }
+        return YouTube.playlist(url, filter, onPage).also { playlists[key] = it }
     }
 
     /** A loaded playlist that contains this video, and the index of the video in it. */

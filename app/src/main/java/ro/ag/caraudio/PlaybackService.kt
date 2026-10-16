@@ -38,6 +38,7 @@ import com.google.common.util.concurrent.ListeningExecutorService
 import com.google.common.util.concurrent.MoreExecutors
 import java.io.IOException
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
 /**
  * Plays audio in the background. It also gives the media notification, lock screen and
@@ -49,6 +50,13 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var session: MediaLibrarySession
     private val executor: ListeningExecutorService =
         MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(3))
+
+    /**
+     * A separate thread for prefetching, so that it never delays a request to play.
+     * Only the latest prefetch is kept: a new song cancels the old prefetch.
+     */
+    private val prefetcher = Executors.newSingleThreadExecutor()
+    private var prefetchTask: Future<*>? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -112,6 +120,7 @@ class PlaybackService : MediaLibraryService() {
         session.release()
         player.release()
         executor.shutdownNow()
+        prefetcher.shutdownNow()
         super.onDestroy()
     }
 
@@ -179,7 +188,8 @@ class PlaybackService : MediaLibraryService() {
                 .filter { it != C.INDEX_UNSET }
                 .map { player.getMediaItemAt(it).mediaId }
                 .filter { it.startsWith("http") }
-            executor.execute {
+            prefetchTask?.cancel(true)
+            prefetchTask = prefetcher.submit {
                 neighbours.forEach { id ->
                     runCatching { YouTube.streamUrl(id) }
                         .onFailure { Log.i(TAG, "Prefetch failed for $id: ${it.message}") }

@@ -89,6 +89,15 @@ class MainActivity : ComponentActivity() {
     /** The playlist that is open, and its videos (empty while they load). */
     private var openPlaylist by mutableStateOf<MediaItem?>(null)
     private var playlistVideos by mutableStateOf<List<MediaItem>>(emptyList())
+
+    /** True from the tap on a playlist until its first song is sent to the player. */
+    private var startingPlaylist by mutableStateOf(false)
+
+    /**
+     * The playlist URL that the queue was made from, while its later pages still load.
+     * Those pages are added to the queue only if the queue was not changed since then.
+     */
+    private var queueSource: String? = null
     private var recent by mutableStateOf<List<MediaItem>>(emptyList())
     private var searching by mutableStateOf(false)
     private var message by mutableStateOf<String?>(null)
@@ -181,20 +190,48 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Open a playlist. With [autoplay], also play it from the first video. */
+    /**
+     * Open a playlist. With [autoplay], also play it: the first song starts as soon as
+     * the first page of the playlist arrives, and the later pages are added to the queue.
+     */
     private fun showPlaylist(playlist: MediaItem, autoplay: Boolean = false) {
+        val url = playlist.mediaId
         openPlaylist = playlist
         playlistVideos = emptyList()
         searching = true
+        startingPlaylist = autoplay
         message = null
+        var started = false
         lifecycleScope.launch {
-            runCatching { withContext(Dispatchers.IO) { Library.playlist(playlist.mediaId) } }
-                .onSuccess {
-                    if (openPlaylist == playlist) playlistVideos = it
-                    if (autoplay) playAll(it)
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    Library.playlist(url) { page ->
+                        runOnUiThread {
+                            if (openPlaylist == playlist) playlistVideos = playlistVideos + page
+                            if (!autoplay || page.isEmpty()) return@runOnUiThread
+                            if (!started) {
+                                started = true
+                                startingPlaylist = false
+                                playAll(page)
+                                queueSource = url
+                            } else if (queueSource == url) {
+                                controller?.addMediaItems(page)
+                            }
+                        }
+                    }
+                }
+            }
+                .onSuccess { all ->
+                    if (openPlaylist == playlist) playlistVideos = all
+                    if (autoplay && all.isEmpty()) {
+                        message = if (artistsOnly) "No songs left in this playlist with \"Artists only\" on"
+                        else "This playlist is empty"
+                    }
                 }
                 .onFailure { message = "Cannot load the playlist: ${it.message}" }
             searching = false
+            startingPlaylist = false
+            if (queueSource == url) queueSource = null
         }
     }
 
@@ -202,6 +239,7 @@ class MainActivity : ComponentActivity() {
     private fun playAll(videos: List<MediaItem>, start: Int = 0, shuffle: Boolean = false) {
         val c = controller ?: return
         if (videos.isEmpty()) return
+        queueSource = null
         message = "Loading…"
         c.shuffleModeEnabled = shuffle
         c.setMediaItems(videos, if (shuffle) videos.indices.random() else start, C.TIME_UNSET)
@@ -227,6 +265,7 @@ class MainActivity : ComponentActivity() {
     private fun play(item: MediaItem) {
         val c = controller ?: return
         message = "Loading…"
+        queueSource = null
         c.shuffleModeEnabled = false
         c.setMediaItem(item)
         c.prepare()
@@ -359,7 +398,16 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun androidx.compose.foundation.layout.ColumnScope.PlaylistScreen(playlist: MediaItem) {
         PlaylistHeader(playlist)
-        nowPlaying?.let { NowPlayingCard(it) }
+        if (startingPlaylist) {
+            Text(
+                "Starting the playlist…",
+                Modifier.fillMaxWidth().padding(16.dp),
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+            )
+        } else {
+            nowPlaying?.let { NowPlayingCard(it) }
+        }
         Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = { playAll(playlistVideos) }, enabled = playlistVideos.isNotEmpty()) {
                 Text("▶  Play all")

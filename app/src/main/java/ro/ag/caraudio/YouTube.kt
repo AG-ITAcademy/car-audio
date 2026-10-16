@@ -69,20 +69,36 @@ object YouTube {
             }
     }
 
-    /** The videos of a playlist. */
-    fun playlist(url: String, artistsOnly: Boolean): List<MediaItem> {
+    /**
+     * The videos of a playlist. YouTube sends them in pages of about 100. [onPage] gets
+     * each page when it arrives, so that the first song can play before all pages load.
+     */
+    fun playlist(
+        url: String,
+        artistsOnly: Boolean,
+        onPage: ((List<MediaItem>) -> Unit)? = null,
+    ): List<MediaItem> {
+        val all = mutableListOf<MediaItem>()
+        val seen = HashSet<String>()
+        fun add(page: List<StreamInfoItem>) {
+            val items = page
+                .filter { seen.add(it.url) }
+                .filter { !artistsOnly || MusicFilter.isArtistSong(it.name, it.uploaderName, it.isUploaderVerified) }
+                .map { track(it.url, it.name, it.uploaderName, bestImage(it.thumbnails), it.duration) }
+            all += items
+            onPage?.invoke(items)
+        }
         val info = PlaylistInfo.getInfo(service, url)
-        val items = info.relatedItems.toMutableList()
+        add(info.relatedItems)
         var page: Page? = info.nextPage
-        while (Page.isValid(page) && items.size < MAX_PLAYLIST_ITEMS) {
+        var loaded = info.relatedItems.size
+        while (Page.isValid(page) && loaded < MAX_PLAYLIST_ITEMS) {
             val more = PlaylistInfo.getMoreItems(service, url, page)
-            items += more.items
+            add(more.items)
+            loaded += more.items.size
             page = more.nextPage
         }
-        return items
-            .distinctBy { it.url }
-            .filter { !artistsOnly || MusicFilter.isArtistSong(it.name, it.uploaderName, it.isUploaderVerified) }
-            .map { track(it.url, it.name, it.uploaderName, bestImage(it.thumbnails), it.duration) }
+        return all
     }
 
     /**
