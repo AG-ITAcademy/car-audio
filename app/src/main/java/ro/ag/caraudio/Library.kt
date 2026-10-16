@@ -41,6 +41,17 @@ object Library {
         return YouTube.playlist(url, filter, onPage).also { playlists[key] = it }
     }
 
+    /** Mood playlists, searched one time per run of the app: "filter|mood id" to playlists. */
+    private val moodResults = ConcurrentHashMap<String, List<MediaItem>>()
+
+    /** The playlists of a drive mood. Call from a background thread. */
+    fun moodPlaylists(mood: Mood): List<MediaItem> {
+        val filter = artistsOnly
+        val key = "$filter|${mood.id}"
+        return moodResults[key]
+            ?: YouTube.search(mood.query, YouTube.SearchType.PLAYLISTS, filter).also { moodResults[key] = it }
+    }
+
     /** A loaded playlist that contains this video, and the index of the video in it. */
     fun playlistContaining(mediaId: String): Pair<List<MediaItem>, Int>? {
         for (items in playlists.values) {

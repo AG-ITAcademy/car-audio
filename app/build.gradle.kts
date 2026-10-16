@@ -43,6 +43,11 @@ android {
         jvmTarget = "17"
     }
 
+    // ArtProvider opens the images with AssetManager.openFd, which needs them uncompressed.
+    androidResources {
+        noCompress += listOf("jpg", "png")
+    }
+
     buildFeatures {
         compose = true
     }

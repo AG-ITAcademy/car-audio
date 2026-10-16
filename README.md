@@ -30,9 +30,15 @@ Or from a PC with USB debugging: `adb install -r app-debug.apk`
 
 
 
+## Design
+
+The app uses **Nightline**, its own design system: see [DESIGN.md](DESIGN.md).
+
 ## Use
 
-- Type a search. The app searches **Playlists** by default; tap **Videos** to search videos.
+- On Home, tap a **Drive mood** for playlists that fit the moment, or type a search.
+  The app searches **Playlists** by default; tap **Songs** to search single songs.
+- Tap the player at the bottom to open the full player (scrubber, shuffle, repeat, up next).
 - Tap a playlist to play it from the first song. The playlist screen shows the song that plays
   now (large picture, title, artist), big ⏮ ⏯ ⏭ buttons, and the songs of the playlist with the
   current song marked. You can also tap a song, **Play all** or **Shuffle**.
@@ -62,7 +68,8 @@ Android Auto shows only apps from the Play Store, unless you allow unknown sourc
 5. Restart the phone.
 
 Then, in the Android Auto settings, open **Customize launcher** and make sure **Car Audio** is on.
-**Car Audio** shows in the car's app list, with **Recently played** and **Last search**.
+**Car Audio** shows in the car's app list, with three tabs: **Moods** (tiles), **Recent** and
+**Search**. The playback screen has **Shuffle** and **Repeat** buttons.
 Tap the search icon (🔍) on the car screen to search. Android Auto lets you type only when the
 car is parked; while you drive, it uses voice input.
 Voice search also works: "Play *something* on Car Audio". It plays the first playlist found.

@@ -9,7 +9,7 @@
 
     <application
         android:name=".App"
-        android:icon="@drawable/ic_launcher"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
@@ -56,6 +56,12 @@
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+
+        <!-- Mood tiles and tab icons for Android Auto (read-only, fixed file names). -->
+        <provider
+            android:name=".ArtProvider"
+            android:authorities="ro.ag.caraudio.art"
+            android:exported="true" />
 
         <!-- Lets the car's or headset's "play" button resume the last track. -->
         <receiver

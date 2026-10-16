@@ -7,59 +7,11 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -69,42 +21,31 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
-import coil.compose.AsyncImage
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import ro.ag.caraudio.ui.Actions
+import ro.ag.caraudio.ui.AppRoot
+import ro.ag.caraudio.ui.AppState
 
-class MainActivity : ComponentActivity() {
+/** Connects the screens (ui package) to YouTube and to the playback service. */
+class MainActivity : ComponentActivity(), Actions {
 
+    private val state = AppState()
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
-
-    private var query by mutableStateOf("")
-    private var searchType by mutableStateOf(YouTube.SearchType.PLAYLISTS)
-    private var artistsOnly by mutableStateOf(true)
-    private var results by mutableStateOf<List<MediaItem>>(emptyList())
-
-    /** The playlist that is open, and its videos (empty while they load). */
-    private var openPlaylist by mutableStateOf<MediaItem?>(null)
-    private var playlistVideos by mutableStateOf<List<MediaItem>>(emptyList())
-
-    /** True from the tap on a playlist until its first song is sent to the player. */
-    private var startingPlaylist by mutableStateOf(false)
 
     /**
      * The playlist URL that the queue was made from, while its later pages still load.
      * Those pages are added to the queue only if the queue was not changed since then.
      */
     private var queueSource: String? = null
-    private var recent by mutableStateOf<List<MediaItem>>(emptyList())
-    private var searching by mutableStateOf(false)
-    private var message by mutableStateOf<String?>(null)
-    private var nowPlaying by mutableStateOf<MediaItem?>(null)
-    private var isPlaying by mutableStateOf(false)
-    private var queueSize by mutableStateOf(0)
-    private var queueIndex by mutableStateOf(0)
+
+    /** Queue indices of the "Up next" list (they follow the shuffle order). */
+    private var upNextIndices: List<Int> = emptyList()
 
     /** For the pop-up with the song name when a new song starts. */
     private val notificationPermission =
@@ -115,18 +56,29 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+        )
         pendingUrl = linkFrom(intent)
-        artistsOnly = Library.artistsOnly
+        state.artistsOnly = Library.artistsOnly
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         setContent {
-            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
-                Surface(Modifier.fillMaxSize()) { Screen() }
+            // The position of the song, for the progress bars.
+            LaunchedEffect(Unit) {
+                while (true) {
+                    controller?.let {
+                        state.positionMs = it.currentPosition
+                        state.durationMs = it.duration.coerceAtLeast(0)
+                    }
+                    delay(500)
+                }
             }
+            AppRoot(state, this)
         }
     }
 
@@ -139,7 +91,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        recent = Library.recent
+        state.recent = Library.recent
         val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         val future = MediaController.Builder(this, token).buildAsync()
         controllerFuture = future
@@ -149,7 +101,7 @@ class MainActivity : ComponentActivity() {
             c.addListener(object : Player.Listener {
                 override fun onEvents(player: Player, events: Player.Events) = updateState(player)
                 override fun onPlayerError(error: PlaybackException) {
-                    message = "Playback error: ${error.errorCodeName}"
+                    state.message = "Playback error: ${error.errorCodeName}"
                 }
             })
             updateState(c)
@@ -166,52 +118,118 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateState(player: Player) {
-        nowPlaying = player.currentMediaItem
-        isPlaying = player.isPlaying
-        if (isPlaying && message == "Loading…") message = null
-        queueSize = player.mediaItemCount
-        queueIndex = player.currentMediaItemIndex
-        recent = Library.recent
+        state.nowPlaying = player.currentMediaItem
+        state.isPlaying = player.isPlaying
+        state.isBuffering = player.playbackState == Player.STATE_BUFFERING && player.playWhenReady
+        if (state.isPlaying && state.message == "Loading…") state.message = null
+        state.queueSize = player.mediaItemCount
+        state.queueIndex = player.currentMediaItemIndex
+        state.shuffle = player.shuffleModeEnabled
+        state.repeatMode = player.repeatMode
+        state.recent = Library.recent
+
+        // "Up next": the next 15 items in play order (this follows shuffle).
+        val timeline = player.currentTimeline
+        val indices = mutableListOf<Int>()
+        var i = player.currentMediaItemIndex
+        while (!timeline.isEmpty && indices.size < 15) {
+            i = timeline.getNextWindowIndex(i, Player.REPEAT_MODE_OFF, player.shuffleModeEnabled)
+            if (i == C.INDEX_UNSET) break
+            indices += i
+        }
+        upNextIndices = indices
+        state.upNext = indices.map { player.getMediaItemAt(it) }
     }
 
-    private fun search() {
-        val q = query.trim()
+    // ------------------------------------------------------------ search
+
+    override fun setQuery(text: String) {
+        state.query = text
+    }
+
+    override fun search() {
+        val q = state.query.trim()
         if (q.isEmpty()) return
-        val type = searchType
-        val filter = artistsOnly
-        searching = true
-        message = null
-        openPlaylist = null
+        state.resultsMood = null
+        runSearch(q, state.searchType)
+    }
+
+    override fun openMood(mood: Mood) {
+        state.resultsMood = mood
+        state.query = ""
+        state.searchType = YouTube.SearchType.PLAYLISTS
+        runSearch(mood.query, YouTube.SearchType.PLAYLISTS)
+    }
+
+    private fun runSearch(q: String, type: YouTube.SearchType) {
+        val filter = state.artistsOnly
+        state.loading = true
+        state.message = null
+        state.openPlaylist = null
         lifecycleScope.launch {
             runCatching { withContext(Dispatchers.IO) { YouTube.search(q, type, filter) } }
-                .onSuccess { results = it; Library.lastSearch = it }
-                .onFailure { message = "Search failed: ${it.message}" }
-            searching = false
+                .onSuccess {
+                    state.results = it
+                    Library.lastSearch = it
+                    if (it.isEmpty()) state.message = "Nothing found. Try other words, or turn off \"Artists only\"."
+                }
+                .onFailure { state.message = "Search failed: ${it.message}" }
+            state.loading = false
         }
     }
+
+    /** Search again with the same words or mood (after a filter change). */
+    private fun searchAgain() {
+        val mood = state.resultsMood
+        when {
+            mood != null -> runSearch(mood.query, state.searchType)
+            state.query.isNotBlank() -> runSearch(state.query.trim(), state.searchType)
+        }
+    }
+
+    override fun setSearchType(type: YouTube.SearchType) {
+        if (state.searchType == type) return
+        state.searchType = type
+        searchAgain()
+    }
+
+    override fun toggleArtistsOnly() {
+        state.artistsOnly = !state.artistsOnly
+        Library.artistsOnly = state.artistsOnly
+        searchAgain()
+    }
+
+    override fun clearResults() {
+        state.results = emptyList()
+        state.resultsMood = null
+        state.query = ""
+        state.message = null
+    }
+
+    // ------------------------------------------------------------ playlists
 
     /**
      * Open a playlist. With [autoplay], also play it: the first song starts as soon as
      * the first page of the playlist arrives, and the later pages are added to the queue.
      */
-    private fun showPlaylist(playlist: MediaItem, autoplay: Boolean = false) {
+    override fun openPlaylist(playlist: MediaItem, autoplay: Boolean) {
         val url = playlist.mediaId
-        openPlaylist = playlist
-        playlistVideos = emptyList()
-        searching = true
-        startingPlaylist = autoplay
-        message = null
+        state.openPlaylist = playlist
+        state.playlistVideos = emptyList()
+        state.loading = true
+        state.startingPlaylist = autoplay
+        state.message = null
         var started = false
         lifecycleScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
                     Library.playlist(url) { page ->
                         runOnUiThread {
-                            if (openPlaylist == playlist) playlistVideos = playlistVideos + page
+                            if (state.openPlaylist == playlist) state.playlistVideos = state.playlistVideos + page
                             if (!autoplay || page.isEmpty()) return@runOnUiThread
                             if (!started) {
                                 started = true
-                                startingPlaylist = false
+                                state.startingPlaylist = false
                                 playAll(page)
                                 queueSource = url
                             } else if (queueSource == url) {
@@ -222,49 +240,55 @@ class MainActivity : ComponentActivity() {
                 }
             }
                 .onSuccess { all ->
-                    if (openPlaylist == playlist) playlistVideos = all
+                    if (state.openPlaylist == playlist) state.playlistVideos = all
                     if (autoplay && all.isEmpty()) {
-                        message = if (artistsOnly) "No songs left in this playlist with \"Artists only\" on"
+                        state.message = if (state.artistsOnly) "No songs left in this playlist with \"Artists only\" on"
                         else "This playlist is empty"
                     }
                 }
-                .onFailure { message = "Cannot load the playlist: ${it.message}" }
-            searching = false
-            startingPlaylist = false
+                .onFailure { state.message = "Cannot load the playlist: ${it.message}" }
+            state.loading = false
+            state.startingPlaylist = false
             if (queueSource == url) queueSource = null
         }
     }
 
-    /** Play a list of videos, starting at [start]. With [shuffle], start at a random video. */
-    private fun playAll(videos: List<MediaItem>, start: Int = 0, shuffle: Boolean = false) {
-        val c = controller ?: return
-        if (videos.isEmpty()) return
-        queueSource = null
-        message = "Loading…"
-        c.shuffleModeEnabled = shuffle
-        c.setMediaItems(videos, if (shuffle) videos.indices.random() else start, C.TIME_UNSET)
-        c.prepare()
-        c.play()
+    override fun closePlaylist() {
+        state.openPlaylist = null
+        state.message = null
     }
 
-    /** Play all videos of a playlist from the search results, without opening it. */
     /** Add all videos of a playlist to the end of the queue. */
-    private fun queuePlaylist(playlist: MediaItem) {
+    override fun queuePlaylist(playlist: MediaItem) {
         lifecycleScope.launch {
             runCatching { withContext(Dispatchers.IO) { Library.playlist(playlist.mediaId) } }
                 .onSuccess { videos ->
                     val c = controller ?: return@onSuccess
                     if (c.mediaItemCount == 0) return@onSuccess playAll(videos)
                     c.addMediaItems(videos)
-                    message = "Added ${videos.size} songs to the queue"
+                    state.message = "Added ${videos.size} songs to the queue"
                 }
-                .onFailure { message = "Cannot load the playlist: ${it.message}" }
+                .onFailure { state.message = "Cannot load the playlist: ${it.message}" }
         }
     }
 
-    private fun play(item: MediaItem) {
+    // ------------------------------------------------------------ playback
+
+    /** Play a list of videos, starting at [start]. With [shuffle], start at a random video. */
+    override fun playAll(videos: List<MediaItem>, start: Int, shuffle: Boolean) {
         val c = controller ?: return
-        message = "Loading…"
+        if (videos.isEmpty()) return
+        queueSource = null
+        state.message = "Loading…"
+        c.shuffleModeEnabled = shuffle
+        c.setMediaItems(videos, if (shuffle) videos.indices.random() else start, C.TIME_UNSET)
+        c.prepare()
+        c.play()
+    }
+
+    override fun play(item: MediaItem) {
+        val c = controller ?: return
+        state.message = "Loading…"
         queueSource = null
         c.shuffleModeEnabled = false
         c.setMediaItem(item)
@@ -272,21 +296,28 @@ class MainActivity : ComponentActivity() {
         c.play()
     }
 
-    private fun addToQueue(item: MediaItem) {
+    override fun addToQueue(item: MediaItem) {
         val c = controller ?: return
         if (c.mediaItemCount == 0) return play(item)
         c.addMediaItem(item)
-        message = "Added to queue"
+        state.message = "Added to the queue"
+    }
+
+    override fun playQueueItem(offsetFromCurrent: Int) {
+        val c = controller ?: return
+        val index = upNextIndices.getOrNull(offsetFromCurrent - 1) ?: return
+        c.seekTo(index, C.TIME_UNSET)
+        resume(c)
     }
 
     /**
      * Next item. The playback service decides with the real queue (see PlaybackService
      * onCustomCommand), and it always continues playback.
      */
-    private fun next() = sendSkip(PlaybackService.CMD_NEXT)
+    override fun next() = sendSkip(PlaybackService.CMD_NEXT)
 
     /** Start of the item; a second press within 4 seconds goes to the previous item. */
-    private fun previous() = sendSkip(PlaybackService.CMD_PREVIOUS)
+    override fun previous() = sendSkip(PlaybackService.CMD_PREVIOUS)
 
     private fun sendSkip(action: String) {
         val c = controller ?: return
@@ -294,21 +325,21 @@ class MainActivity : ComponentActivity() {
         future.addListener({
             val result = runCatching { future.get() }.getOrNull()
             if (result == null || result.resultCode != SessionResult.RESULT_SUCCESS) {
-                message = "Skip failed (code ${result?.resultCode})"
+                state.message = "Skip failed (code ${result?.resultCode})"
                 return@addListener
             }
             val extras = result.extras
             if (!extras.getBoolean(PlaybackService.EXTRA_MOVED, true)) {
                 val index = extras.getInt(PlaybackService.EXTRA_INDEX) + 1
                 val count = extras.getInt(PlaybackService.EXTRA_COUNT)
-                message = "No next song in the queue ($index / $count)"
+                state.message = "No next song in the queue ($index / $count)"
             }
         }, MoreExecutors.directExecutor())
     }
 
-    private fun playPause() {
+    override fun playPause() {
         val c = controller ?: return
-        message = null
+        state.message = null
         if (c.isPlaying) c.pause() else resume(c)
     }
 
@@ -317,290 +348,30 @@ class MainActivity : ComponentActivity() {
         c.play()
     }
 
-    @Composable
-    private fun Screen() {
-        BackHandler(enabled = openPlaylist != null) { openPlaylist = null }
-        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-            val playlist = openPlaylist
-            if (playlist == null) SearchBar()
-            if (searching) {
-                CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).padding(16.dp))
-            }
-            message?.let {
-                Text(it, Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.secondary)
-            }
+    override fun seekTo(positionMs: Long) {
+        controller?.seekTo(positionMs)
+    }
 
-            if (playlist != null) {
-                PlaylistScreen(playlist)
-            } else {
-                val list = results.ifEmpty { recent }
-                if (results.isEmpty() && recent.isNotEmpty()) {
-                    Text("Recently played", Modifier.padding(16.dp, 8.dp), style = MaterialTheme.typography.titleSmall)
-                }
-                LazyColumn(Modifier.weight(1f)) {
-                    items(list, key = { it.mediaId }) { item ->
-                        if (item.mediaMetadata.isBrowsable == true) {
-                            PlaylistRow(item)
-                        } else {
-                            VideoRow(item, onClick = { play(item) })
-                        }
-                    }
-                }
-                nowPlaying?.let { PlayerBar(it) }
+    override fun toggleShuffle() {
+        controller?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled }
+    }
+
+    override fun cycleRepeat() {
+        controller?.let {
+            it.repeatMode = when (it.repeatMode) {
+                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
             }
         }
     }
 
-    @Composable
-    private fun SearchBar() {
-        Column {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth().padding(12.dp, 12.dp, 12.dp, 0.dp),
-                placeholder = { Text("Search YouTube") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { search() }),
-            )
-            Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                YouTube.SearchType.entries.forEach { type ->
-                    FilterChip(
-                        selected = searchType == type,
-                        onClick = {
-                            if (searchType != type) {
-                                searchType = type
-                                search()
-                            }
-                        },
-                        label = { Text(if (type == YouTube.SearchType.PLAYLISTS) "Playlists" else "Videos") },
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                // Hides AI-generated music: only songs that name an artist.
-                FilterChip(
-                    selected = artistsOnly,
-                    onClick = {
-                        artistsOnly = !artistsOnly
-                        Library.artistsOnly = artistsOnly
-                        search()
-                    },
-                    label = { Text("Artists only") },
-                )
-            }
-        }
+    override fun openNowPlaying() {
+        state.showNowPlaying = true
     }
 
-    /**
-     * An open playlist: the song that plays now (large), the controls, and the songs
-     * of the playlist. The song that plays now is marked in the list.
-     */
-    @Composable
-    private fun androidx.compose.foundation.layout.ColumnScope.PlaylistScreen(playlist: MediaItem) {
-        PlaylistHeader(playlist)
-        if (startingPlaylist) {
-            Text(
-                "Starting the playlist…",
-                Modifier.fillMaxWidth().padding(16.dp),
-                style = MaterialTheme.typography.titleMedium,
-                textAlign = TextAlign.Center,
-            )
-        } else {
-            nowPlaying?.let { NowPlayingCard(it) }
-        }
-        Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { playAll(playlistVideos) }, enabled = playlistVideos.isNotEmpty()) {
-                Text("▶  Play all")
-            }
-            TextButton(onClick = { playAll(playlistVideos, shuffle = true) }, enabled = playlistVideos.isNotEmpty()) {
-                Text("🔀  Shuffle")
-            }
-        }
-        HorizontalDivider()
-
-        val current = playlistVideos.indexOfFirst { it.mediaId == nowPlaying?.mediaId }
-        val listState = rememberLazyListState()
-        LaunchedEffect(current) {
-            if (current >= 0) listState.animateScrollToItem(current)
-        }
-        LazyColumn(Modifier.weight(1f), state = listState) {
-            items(playlistVideos.size, key = { playlistVideos[it].mediaId }) { index ->
-                VideoRow(
-                    playlistVideos[index],
-                    onClick = { playAll(playlistVideos, start = index) },
-                    current = index == current,
-                )
-            }
-        }
-    }
-
-    /** Large thumbnail, title, artist and big buttons for the song that plays now. */
-    @Composable
-    private fun NowPlayingCard(item: MediaItem) {
-        Column(
-            Modifier.fillMaxWidth().padding(16.dp, 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            AsyncImage(
-                model = YouTube.largeThumbnail(item.mediaId) ?: item.mediaMetadata.artworkUri,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .aspectRatio(16f / 9f)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-            )
-            Spacer(Modifier.size(8.dp))
-            Text(
-                item.mediaMetadata.title?.toString().orEmpty(),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-                maxLines = 2, overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                listOfNotNull(
-                    item.mediaMetadata.artist?.toString(),
-                    if (queueSize > 1) "${queueIndex + 1} / $queueSize" else null,
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.secondary,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-            Row(
-                Modifier.fillMaxWidth().padding(top = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                FilledTonalIconButton(onClick = ::previous, modifier = Modifier.size(64.dp)) {
-                    Text("⏮", fontSize = 26.sp)
-                }
-                FilledIconButton(onClick = ::playPause, modifier = Modifier.size(80.dp), shape = CircleShape) {
-                    Text(if (isPlaying) "❚❚" else "▶", fontSize = 30.sp)
-                }
-                FilledTonalIconButton(onClick = ::next, modifier = Modifier.size(64.dp)) {
-                    Text("⏭", fontSize = 26.sp)
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun PlaylistHeader(playlist: MediaItem) {
-        Row(Modifier.fillMaxWidth().padding(4.dp, 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { openPlaylist = null }) { Text("←", fontSize = 22.sp) }
-            Text(
-                playlist.mediaMetadata.title?.toString().orEmpty(),
-                Modifier.weight(1f),
-                fontWeight = FontWeight.Bold,
-                maxLines = 2, overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-
-    @Composable
-    private fun PlaylistRow(item: MediaItem) {
-        val count = item.mediaMetadata.extras?.getLong(YouTube.EXTRA_COUNT) ?: -1
-        ItemRow(
-            item,
-            subtitle = listOfNotNull(
-                item.mediaMetadata.artist?.toString(),
-                if (count >= 0) "$count videos" else null,
-            ).joinToString(" · "),
-            onClick = { showPlaylist(item, autoplay = true) },
-        ) {
-            TextButton(onClick = { queuePlaylist(item) }) { Text("+", fontSize = 24.sp) }
-        }
-    }
-
-    @Composable
-    private fun VideoRow(item: MediaItem, onClick: () -> Unit, current: Boolean = false) {
-        ItemRow(
-            item,
-            current = current,
-            subtitle = listOfNotNull(
-                item.mediaMetadata.artist?.toString(),
-                duration(item.mediaMetadata.extras?.getLong(YouTube.EXTRA_DURATION) ?: 0),
-            ).joinToString(" · "),
-            onClick = onClick,
-        ) {
-            TextButton(onClick = { addToQueue(item) }) { Text("+", fontSize = 24.sp) }
-        }
-    }
-
-    @Composable
-    private fun ItemRow(
-        item: MediaItem,
-        subtitle: String,
-        onClick: () -> Unit,
-        current: Boolean = false,
-        action: @Composable () -> Unit,
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(if (current) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)
-                .clickable(onClick = onClick)
-                .padding(12.dp, 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            AsyncImage(
-                model = item.mediaMetadata.artworkUri,
-                contentDescription = null,
-                modifier = Modifier.size(width = 96.dp, height = 54.dp),
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    (if (current) "▶ " else "") + item.mediaMetadata.title?.toString().orEmpty(),
-                    fontWeight = if (current) FontWeight.Bold else null,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-            }
-            action()
-        }
-    }
-
-    @Composable
-    private fun PlayerBar(item: MediaItem) {
-        HorizontalDivider()
-        Row(
-            Modifier.fillMaxWidth().padding(12.dp, 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    item.mediaMetadata.title?.toString().orEmpty(),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    listOfNotNull(
-                        item.mediaMetadata.artist?.toString(),
-                        if (queueSize > 1) "${queueIndex + 1} / $queueSize" else null,
-                    ).joinToString(" · "),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-            }
-            TextButton(onClick = ::previous) { Text("⏮", fontSize = 22.sp) }
-            TextButton(onClick = ::playPause) { Text(if (isPlaying) "❚❚" else "▶", fontSize = 22.sp) }
-            TextButton(onClick = ::next) { Text("⏭", fontSize = 22.sp) }
-        }
-    }
-
-    private fun duration(seconds: Long): String? {
-        if (seconds <= 0) return null
-        val h = seconds / 3600
-        val m = seconds % 3600 / 60
-        val s = seconds % 60
-        return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+    override fun closeNowPlaying() {
+        state.showNowPlaying = false
     }
 
     private fun linkFrom(intent: Intent?): String? {

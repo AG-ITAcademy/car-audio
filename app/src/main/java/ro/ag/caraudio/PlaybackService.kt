@@ -23,6 +23,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.CommandButton
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.LibraryParams
@@ -105,6 +106,38 @@ class PlaybackService : MediaLibraryService() {
         session = MediaLibrarySession.Builder(this, CarPlayer(player), LibraryCallback())
             .setSessionActivity(openApp)
             .build()
+        updateCustomLayout()
+    }
+
+    /**
+     * Shuffle and repeat buttons on the Android Auto playback screen (and in the media
+     * notification). The icon shows the current mode: a bar under it means "on".
+     */
+    private fun updateCustomLayout() {
+        if (!::session.isInitialized) return
+        val shuffle = CommandButton.Builder()
+            .setDisplayName(if (player.shuffleModeEnabled) "Shuffle on" else "Shuffle off")
+            .setIconResId(if (player.shuffleModeEnabled) R.drawable.ic_shuffle_on else R.drawable.ic_shuffle)
+            .setSessionCommand(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
+            .build()
+        val repeat = CommandButton.Builder()
+            .setDisplayName(
+                when (player.repeatMode) {
+                    Player.REPEAT_MODE_ALL -> "Repeat all"
+                    Player.REPEAT_MODE_ONE -> "Repeat one"
+                    else -> "Repeat off"
+                }
+            )
+            .setIconResId(
+                when (player.repeatMode) {
+                    Player.REPEAT_MODE_ALL -> R.drawable.ic_repeat_on
+                    Player.REPEAT_MODE_ONE -> R.drawable.ic_repeat_one_on
+                    else -> R.drawable.ic_repeat
+                }
+            )
+            .setSessionCommand(SessionCommand(CMD_REPEAT, Bundle.EMPTY))
+            .build()
+        session.setCustomLayout(ImmutableList.of(shuffle, repeat))
     }
 
     override fun onGetSession(controllerInfo: ControllerInfo): MediaLibrarySession = session
@@ -201,6 +234,13 @@ class PlaybackService : MediaLibraryService() {
             if (isPlaying) retriedId = null
         }
 
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            updateCustomLayout()
+            prefetchNeighbours()
+        }
+
+        override fun onRepeatModeChanged(repeatMode: Int) = updateCustomLayout()
+
         /**
          * An HTTP error usually means that the stream URL expired: get a new one and try
          * again, one time. Any other error (private, removed or blocked video) does not
@@ -237,14 +277,15 @@ class PlaybackService : MediaLibraryService() {
             controller: ControllerInfo,
         ): MediaSession.ConnectionResult {
             val result = super.onConnect(session, controller)
-            if (controller.packageName != packageName) return result
+            val commands = result.availableSessionCommands.buildUpon()
+                .add(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
+                .add(SessionCommand(CMD_REPEAT, Bundle.EMPTY))
+            if (controller.packageName == packageName) {
+                commands.add(SessionCommand(CMD_NEXT, Bundle.EMPTY))
+                commands.add(SessionCommand(CMD_PREVIOUS, Bundle.EMPTY))
+            }
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
-                .setAvailableSessionCommands(
-                    result.availableSessionCommands.buildUpon()
-                        .add(SessionCommand(CMD_NEXT, Bundle.EMPTY))
-                        .add(SessionCommand(CMD_PREVIOUS, Bundle.EMPTY))
-                        .build()
-                )
+                .setAvailableSessionCommands(commands.build())
                 .setAvailablePlayerCommands(result.availablePlayerCommands)
                 .build()
         }
@@ -260,6 +301,20 @@ class PlaybackService : MediaLibraryService() {
             args: Bundle,
         ): ListenableFuture<SessionResult> {
             val p = session.player
+            when (customCommand.customAction) {
+                CMD_SHUFFLE -> {
+                    p.shuffleModeEnabled = !p.shuffleModeEnabled
+                    return immediate(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                CMD_REPEAT -> {
+                    p.repeatMode = when (p.repeatMode) {
+                        Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                        Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                        else -> Player.REPEAT_MODE_OFF
+                    }
+                    return immediate(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+            }
             val moved = when (customCommand.customAction) {
                 CMD_NEXT -> p.hasNextMediaItem().also { p.seekToNext() }
                 CMD_PREVIOUS -> true.also { p.seekToPrevious() }
@@ -279,11 +334,12 @@ class PlaybackService : MediaLibraryService() {
             browser: ControllerInfo,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<MediaItem>> {
-            // Tell Android Auto that it can show a search button, and to use lists.
+            // Tell Android Auto that it can show a search button. Lists by default;
+            // the Moods tab and the mood pages ask for grids (see folder()).
             val extras = Bundle().apply {
                 putBoolean("android.media.browse.SEARCH_SUPPORTED", true)
-                putInt("android.media.browse.CONTENT_STYLE_BROWSABLE_HINT", 1)
-                putInt("android.media.browse.CONTENT_STYLE_PLAYABLE_HINT", 1)
+                putInt(STYLE_BROWSABLE, STYLE_LIST)
+                putInt(STYLE_PLAYABLE, STYLE_LIST)
             }
             val rootParams = LibraryParams.Builder().setExtras(extras).build()
             return immediate(LibraryResult.ofItem(folder(ROOT, "Car Audio"), rootParams))
@@ -297,16 +353,32 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
-            val children = when (parentId) {
-                ROOT -> listOf(folder(RECENT, "Recently played"), folder(SEARCH, "Last search"))
-                RECENT -> Library.recent
-                SEARCH -> Library.lastSearch
+            val children = when {
+                // The tabs of Android Auto.
+                parentId == ROOT -> listOf(
+                    folder(MOODS, "Moods", ArtProvider.uri("tab_moods.png"), childStyle = STYLE_GRID),
+                    folder(RECENT, "Recent", ArtProvider.uri("tab_recent.png")),
+                    folder(SEARCH, "Search", ArtProvider.uri("tab_search.png"), childStyle = STYLE_GRID),
+                )
+                parentId == MOODS -> Moods.all.map { mood ->
+                    folder(MOOD_PREFIX + mood.id, mood.title, mood.contentUri, mood.subtitle, childStyle = STYLE_GRID)
+                }
+                parentId == RECENT -> Library.recent
+                parentId == SEARCH -> grouped(Library.lastSearch)
+                // A mood: its playlists (search on YouTube, one time).
+                parentId.startsWith(MOOD_PREFIX) -> {
+                    val mood = Moods.byId(parentId.removePrefix(MOOD_PREFIX))
+                        ?: return immediate(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
+                    return executor.submit<LibraryResult<ImmutableList<MediaItem>>> {
+                        LibraryResult.ofItemList(paged(Library.moodPlaylists(mood), page, pageSize), params)
+                    }
+                }
                 // A playlist: load its videos.
                 else -> return executor.submit<LibraryResult<ImmutableList<MediaItem>>> {
-                    LibraryResult.ofItemList(ImmutableList.copyOf(Library.playlist(parentId)), params)
+                    LibraryResult.ofItemList(paged(Library.playlist(parentId), page, pageSize), params)
                 }
             }
-            return immediate(LibraryResult.ofItemList(ImmutableList.copyOf(children), params))
+            return immediate(LibraryResult.ofItemList(paged(children, page, pageSize), params))
         }
 
         override fun onGetItem(
@@ -343,7 +415,7 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
-            immediate(LibraryResult.ofItemList(ImmutableList.copyOf(Library.lastSearch), params))
+            immediate(LibraryResult.ofItemList(paged(grouped(Library.lastSearch), page, pageSize), params))
 
         /** Controllers send only the mediaId (the YouTube URL). Make playable items here. */
         override fun onAddMediaItems(
@@ -444,18 +516,52 @@ class PlaybackService : MediaLibraryService() {
         manager.notify(TRACK_NOTIFICATION_ID, notification)
     }
 
-    private fun folder(id: String, title: String): MediaItem =
+    /**
+     * A browsable item. [childStyle] asks Android Auto to show the children of this
+     * item as a grid ([STYLE_GRID]) or a list ([STYLE_LIST]).
+     */
+    private fun folder(
+        id: String,
+        title: String,
+        artwork: Uri? = null,
+        subtitle: String? = null,
+        childStyle: Int = STYLE_LIST,
+    ): MediaItem =
         MediaItem.Builder()
             .setMediaId(id)
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(title)
+                    .setSubtitle(subtitle)
+                    .setArtworkUri(artwork)
                     .setIsBrowsable(true)
                     .setIsPlayable(false)
                     .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
+                    .setExtras(Bundle().apply {
+                        putInt(STYLE_BROWSABLE, childStyle)
+                        putInt(STYLE_PLAYABLE, STYLE_LIST)
+                    })
                     .build()
             )
             .build()
+
+    /** Search results in two groups with titles: "Playlists", then "Songs". */
+    private fun grouped(items: List<MediaItem>): List<MediaItem> {
+        val (playlists, songs) = items.partition { it.mediaMetadata.isBrowsable == true }
+        return playlists.map { withGroup(it, "Playlists") } + songs.map { withGroup(it, "Songs") }
+    }
+
+    private fun withGroup(item: MediaItem, group: String): MediaItem {
+        val meta = item.mediaMetadata
+        val extras = Bundle(meta.extras ?: Bundle()).apply { putString(STYLE_GROUP_TITLE, group) }
+        return item.buildUpon().setMediaMetadata(meta.buildUpon().setExtras(extras).build()).build()
+    }
+
+    /** The part of [items] that Android Auto asks for. */
+    private fun paged(items: List<MediaItem>, page: Int, pageSize: Int): ImmutableList<MediaItem> {
+        if (pageSize <= 0 || pageSize == Int.MAX_VALUE) return ImmutableList.copyOf(items)
+        return ImmutableList.copyOf(items.drop(page * pageSize).take(pageSize))
+    }
 
     private fun <T> immediate(value: T): ListenableFuture<T> =
         com.google.common.util.concurrent.Futures.immediateFuture(value)
@@ -474,5 +580,16 @@ class PlaybackService : MediaLibraryService() {
         private const val ROOT = "root"
         private const val RECENT = "recent"
         private const val SEARCH = "search"
+        private const val MOODS = "moods"
+        private const val MOOD_PREFIX = "mood:"
+        const val CMD_SHUFFLE = "ro.ag.caraudio.SHUFFLE"
+        const val CMD_REPEAT = "ro.ag.caraudio.REPEAT"
+
+        // Android Auto content style keys and values.
+        private const val STYLE_BROWSABLE = "android.media.browse.CONTENT_STYLE_BROWSABLE_HINT"
+        private const val STYLE_PLAYABLE = "android.media.browse.CONTENT_STYLE_PLAYABLE_HINT"
+        private const val STYLE_GROUP_TITLE = "android.media.browse.CONTENT_STYLE_GROUP_TITLE_HINT"
+        private const val STYLE_LIST = 1
+        private const val STYLE_GRID = 2
     }
 }
