@@ -558,9 +558,6 @@ class PlaybackService : MediaLibraryService() {
         Log.w(TAG, "Cannot load playlist $url, trying the next one", e)
     }
 
-        throw IOException("No playable playlist for $what")
-    }
-
     /**
      * Which apps may control playback: this app, the apps in [TRUSTED_APPS] (Android
      * Auto, Google Assistant, RoadGuide) and apps that are part of the phone's system
