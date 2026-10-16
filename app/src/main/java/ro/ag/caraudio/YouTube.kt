@@ -47,7 +47,7 @@ object YouTube {
     /**
      * Returns videos (playable) or playlists (browsable). Each mediaId is the YouTube URL.
      */
-    fun search(query: String, type: SearchType): List<MediaItem> {
+    fun search(query: String, type: SearchType, artistsOnly: Boolean): List<MediaItem> {
         val filter = when (type) {
             SearchType.PLAYLISTS -> YoutubeSearchQueryHandlerFactory.PLAYLISTS
             SearchType.VIDEOS -> YoutubeSearchQueryHandlerFactory.VIDEOS
@@ -59,16 +59,18 @@ object YouTube {
             .mapNotNull {
                 when (it) {
                     is StreamInfoItem ->
-                        item(it.url, it.name, it.uploaderName, bestImage(it.thumbnails), it.duration)
+                        if (artistsOnly && !MusicFilter.isArtistSong(it.name, it.uploaderName, it.isUploaderVerified)) null
+                        else track(it.url, it.name, it.uploaderName, bestImage(it.thumbnails), it.duration)
                     is PlaylistInfoItem ->
-                        playlistItem(it.url, it.name, it.uploaderName, bestImage(it.thumbnails), it.streamCount)
+                        if (artistsOnly && MusicFilter.mentionsAi(it.name, it.uploaderName)) null
+                        else playlistItem(it.url, it.name, it.uploaderName, bestImage(it.thumbnails), it.streamCount)
                     else -> null
                 }
             }
     }
 
     /** The videos of a playlist. */
-    fun playlist(url: String): List<MediaItem> {
+    fun playlist(url: String, artistsOnly: Boolean): List<MediaItem> {
         val info = PlaylistInfo.getInfo(service, url)
         val items = info.relatedItems.toMutableList()
         var page: Page? = info.nextPage
@@ -79,7 +81,8 @@ object YouTube {
         }
         return items
             .distinctBy { it.url }
-            .map { item(it.url, it.name, it.uploaderName, bestImage(it.thumbnails), it.duration) }
+            .filter { !artistsOnly || MusicFilter.isArtistSong(it.name, it.uploaderName, it.isUploaderVerified) }
+            .map { track(it.url, it.name, it.uploaderName, bestImage(it.thumbnails), it.duration) }
     }
 
     /**
@@ -92,7 +95,7 @@ object YouTube {
             ?: throw IOException("No audio stream for ${item.mediaId}")
         streamUrls[item.mediaId] = uri to System.currentTimeMillis()
         if (info.url != item.mediaId) streamUrls[info.url] = uri to System.currentTimeMillis()
-        return item(info.url, info.name, info.uploaderName, bestImage(info.thumbnails), info.duration)
+        return track(info.url, info.name, info.uploaderName, bestImage(info.thumbnails), info.duration)
             .buildUpon()
             .setUri(uri)
             .build()
@@ -124,6 +127,12 @@ object YouTube {
     /** Forget the cached stream URL, for example after an HTTP 403 error. */
     fun invalidate(videoUrl: String) {
         streamUrls.remove(videoUrl)
+    }
+
+    /** A video item with the artist and song name taken from the YouTube title. */
+    fun track(url: String, videoTitle: String?, channel: String?, artwork: String?, seconds: Long): MediaItem {
+        val (artist, song) = MusicFilter.artistAndSong(videoTitle.orEmpty(), channel)
+        return item(url, song, artist, artwork, seconds)
     }
 
     fun item(url: String, title: String?, artist: String?, artwork: String?, seconds: Long): MediaItem =

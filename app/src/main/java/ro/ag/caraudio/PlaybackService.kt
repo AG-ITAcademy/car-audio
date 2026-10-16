@@ -1,11 +1,20 @@
 package ro.ag.caraudio
 
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -75,7 +84,7 @@ class PlaybackService : MediaLibraryService() {
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        session = MediaLibrarySession.Builder(this, player, LibraryCallback())
+        session = MediaLibrarySession.Builder(this, CarPlayer(player), LibraryCallback())
             .setSessionActivity(openApp)
             .build()
     }
@@ -96,6 +105,52 @@ class PlaybackService : MediaLibraryService() {
         super.onDestroy()
     }
 
+    /**
+     * Rules for the "back" and "next" buttons (app, notification, steering wheel, Android Auto):
+     * - Next: go to the next item in the queue, if there is one.
+     * - Back: go to the start of the item. A second press within [DOUBLE_BACK_MS]
+     *   goes to the previous item, if there is one.
+     * The two commands are always available, so that the car always sends them.
+     */
+    private class CarPlayer(player: Player) : ForwardingPlayer(player) {
+        private var lastBackPress = 0L
+
+        override fun getAvailableCommands(): Player.Commands =
+            super.getAvailableCommands().buildUpon()
+                .addAll(Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_PREVIOUS)
+                .build()
+
+        override fun isCommandAvailable(command: Int): Boolean =
+            command == Player.COMMAND_SEEK_TO_NEXT || command == Player.COMMAND_SEEK_TO_PREVIOUS ||
+                super.isCommandAvailable(command)
+
+        override fun seekToNext() {
+            if (!hasNextMediaItem()) return
+            seekToNextMediaItem()
+            continuePlayback()
+        }
+
+        override fun seekToPrevious() {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastBackPress < DOUBLE_BACK_MS && hasPreviousMediaItem()) {
+                seekToPreviousMediaItem()
+                lastBackPress = 0
+            } else {
+                seekTo(0)
+                lastBackPress = now
+            }
+            continuePlayback()
+        }
+
+        /** After an error the player stops. A skip must start it again. */
+        private fun continuePlayback() {
+            if (playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED) {
+                prepare()
+                play()
+            }
+        }
+    }
+
     private inner class PlayerListener : Player.Listener {
         /**
          * Stream URLs expire after some hours. On an error, get a new URL one time.
@@ -104,7 +159,9 @@ class PlaybackService : MediaLibraryService() {
         private var retriedId: String? = null
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            mediaItem?.let(Library::addRecent)
+            mediaItem ?: return
+            Library.addRecent(mediaItem)
+            if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) showTrackPopup(mediaItem)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -139,8 +196,16 @@ class PlaybackService : MediaLibraryService() {
             session: MediaLibrarySession,
             browser: ControllerInfo,
             params: LibraryParams?,
-        ): ListenableFuture<LibraryResult<MediaItem>> =
-            immediate(LibraryResult.ofItem(folder(ROOT, "Car Audio"), params))
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            // Tell Android Auto that it can show a search button, and to use lists.
+            val extras = Bundle().apply {
+                putBoolean("android.media.browse.SEARCH_SUPPORTED", true)
+                putInt("android.media.browse.CONTENT_STYLE_BROWSABLE_HINT", 1)
+                putInt("android.media.browse.CONTENT_STYLE_PLAYABLE_HINT", 1)
+            }
+            val rootParams = LibraryParams.Builder().setExtras(extras).build()
+            return immediate(LibraryResult.ofItem(folder(ROOT, "Car Audio"), rootParams))
+        }
 
         override fun onGetChildren(
             session: MediaLibrarySession,
@@ -180,7 +245,10 @@ class PlaybackService : MediaLibraryService() {
             query: String,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<Void>> = executor.submit<LibraryResult<Void>> {
-            Library.lastSearch = YouTube.search(query, YouTube.SearchType.PLAYLISTS)
+            // Playlists first, then single videos.
+            val artistsOnly = Library.artistsOnly
+            Library.lastSearch = YouTube.search(query, YouTube.SearchType.PLAYLISTS, artistsOnly) +
+                YouTube.search(query, YouTube.SearchType.VIDEOS, artistsOnly)
             session.notifySearchResultChanged(browser, query, Library.lastSearch.size, params)
             LibraryResult.ofVoid()
         }
@@ -255,12 +323,43 @@ class PlaybackService : MediaLibraryService() {
         }
         val query = item.requestMetadata.searchQuery
             ?: throw IOException("Unknown item $id")
-        val playlists = YouTube.search(query, YouTube.SearchType.PLAYLISTS)
+        val artistsOnly = Library.artistsOnly
+        val playlists = YouTube.search(query, YouTube.SearchType.PLAYLISTS, artistsOnly)
         Library.lastSearch = playlists
         playlists.firstOrNull()?.let { return Library.playlist(it.mediaId).map(YouTube::lazy) }
-        val video = YouTube.search(query, YouTube.SearchType.VIDEOS).firstOrNull()
+        val video = YouTube.search(query, YouTube.SearchType.VIDEOS, artistsOnly).firstOrNull()
             ?: throw IOException("No result for $query")
         return listOf(YouTube.resolve(video))
+    }
+
+    /**
+     * A short pop-up with the artist and song name, on top of other apps (for example Waze).
+     * It closes after some seconds. It shows on the phone screen, not on the Android Auto screen.
+     */
+    private fun showTrackPopup(item: MediaItem) {
+        if (!player.playWhenReady) return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(TRACK_CHANNEL, "New song pop-up", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Shows the artist and song name when a new song starts"
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+            }
+        )
+        val notification = Notification.Builder(this, TRACK_CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(item.mediaMetadata.title)
+            .setContentText(item.mediaMetadata.artist)
+            .setCategory(Notification.CATEGORY_TRANSPORT)
+            .setTimeoutAfter(TRACK_POPUP_MS)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(false)
+            .build()
+        manager.notify(TRACK_NOTIFICATION_ID, notification)
     }
 
     private fun folder(id: String, title: String): MediaItem =
@@ -281,6 +380,10 @@ class PlaybackService : MediaLibraryService() {
 
     companion object {
         private const val TAG = "CarAudio"
+        private const val DOUBLE_BACK_MS = 4_000L
+        private const val TRACK_CHANNEL = "track_popup"
+        private const val TRACK_NOTIFICATION_ID = 2
+        private const val TRACK_POPUP_MS = 6_000L
         private const val ROOT = "root"
         private const val RECENT = "recent"
         private const val SEARCH = "search"

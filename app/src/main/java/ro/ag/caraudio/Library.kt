@@ -19,12 +19,20 @@ object Library {
     @Volatile
     var lastSearch: List<MediaItem> = emptyList()
 
-    /** Playlists loaded in this run of the app: playlist URL to its videos. */
-    val playlists = ConcurrentHashMap<String, List<MediaItem>>()
+    /** Show only songs by real artists (no AI-generated music). Kept on disk. */
+    var artistsOnly: Boolean
+        get() = prefs.getBoolean("artists_only", true)
+        set(value) = prefs.edit().putBoolean("artists_only", value).apply()
+
+    /** Playlists loaded in this run of the app: "filter|playlist URL" to its videos. */
+    private val playlists = ConcurrentHashMap<String, List<MediaItem>>()
 
     /** The videos of a playlist, loaded only one time. Call from a background thread. */
-    fun playlist(url: String): List<MediaItem> =
-        playlists[url] ?: YouTube.playlist(url).also { playlists[url] = it }
+    fun playlist(url: String): List<MediaItem> {
+        val filter = artistsOnly
+        val key = "$filter|$url"
+        return playlists[key] ?: YouTube.playlist(url, filter).also { playlists[key] = it }
+    }
 
     /** A loaded playlist that contains this video, and the index of the video in it. */
     fun playlistContaining(mediaId: String): Pair<List<MediaItem>, Int>? {

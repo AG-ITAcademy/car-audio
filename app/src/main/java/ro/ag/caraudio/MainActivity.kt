@@ -1,12 +1,16 @@
 package ro.ag.caraudio
 
+import android.Manifest
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -65,6 +69,7 @@ class MainActivity : ComponentActivity() {
 
     private var query by mutableStateOf("")
     private var searchType by mutableStateOf(YouTube.SearchType.PLAYLISTS)
+    private var artistsOnly by mutableStateOf(true)
     private var results by mutableStateOf<List<MediaItem>>(emptyList())
 
     /** The playlist that is open, and its videos (empty while they load). */
@@ -76,6 +81,11 @@ class MainActivity : ComponentActivity() {
     private var nowPlaying by mutableStateOf<MediaItem?>(null)
     private var isPlaying by mutableStateOf(false)
     private var queueSize by mutableStateOf(0)
+    private var queueIndex by mutableStateOf(0)
+
+    /** For the pop-up with the song name when a new song starts. */
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
     /** A link that arrived by "Share" or "Open with" before the controller was ready. */
     private var pendingUrl: String? = null
@@ -84,6 +94,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         pendingUrl = linkFrom(intent)
+        artistsOnly = Library.artistsOnly
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(Modifier.fillMaxSize()) { Screen() }
@@ -131,6 +147,7 @@ class MainActivity : ComponentActivity() {
         isPlaying = player.isPlaying
         if (isPlaying && message == "Loading…") message = null
         queueSize = player.mediaItemCount
+        queueIndex = player.currentMediaItemIndex
         recent = Library.recent
     }
 
@@ -138,11 +155,12 @@ class MainActivity : ComponentActivity() {
         val q = query.trim()
         if (q.isEmpty()) return
         val type = searchType
+        val filter = artistsOnly
         searching = true
         message = null
         openPlaylist = null
         lifecycleScope.launch {
-            runCatching { withContext(Dispatchers.IO) { YouTube.search(q, type) } }
+            runCatching { withContext(Dispatchers.IO) { YouTube.search(q, type, filter) } }
                 .onSuccess { results = it; Library.lastSearch = it }
                 .onFailure { message = "Search failed: ${it.message}" }
             searching = false
@@ -225,6 +243,19 @@ class MainActivity : ComponentActivity() {
                         label = { Text(if (type == YouTube.SearchType.PLAYLISTS) "Playlists" else "Videos") },
                     )
                 }
+                Spacer(Modifier.weight(1f))
+                // Hides AI-generated music: only songs that name an artist.
+                FilterChip(
+                    selected = artistsOnly,
+                    onClick = {
+                        artistsOnly = !artistsOnly
+                        Library.artistsOnly = artistsOnly
+                        val playlist = openPlaylist
+                        search()
+                        if (playlist != null) showPlaylist(playlist)
+                    },
+                    label = { Text("Artists only") },
+                )
             }
             if (searching) {
                 CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).padding(16.dp))
@@ -352,8 +383,16 @@ class MainActivity : ComponentActivity() {
                     item.mediaMetadata.title?.toString().orEmpty(),
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                if (queueSize > 1) Text("$queueSize in queue", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    listOfNotNull(
+                        item.mediaMetadata.artist?.toString(),
+                        if (queueSize > 1) "${queueIndex + 1} / $queueSize" else null,
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
             }
+            TextButton(onClick = { controller?.seekToPrevious() }) { Text("⏮", fontSize = 22.sp) }
             TextButton(onClick = {
                 val c = controller ?: return@TextButton
                 if (c.isPlaying) c.pause() else c.play()

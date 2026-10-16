@@ -27,6 +27,13 @@ Or from a PC with USB debugging: `adb install -r app-debug.apk`
 - Type a search. The app searches **Playlists** by default; tap **Videos** to search videos.
 - Tap a playlist to open it, then **Play all** or **Shuffle**. Tap ▶ on a playlist to play it at once.
 - Tap a video to play it. Tap **+** to add it to the queue.
+- **Artists only** (on by default) hides AI-generated music. It keeps only videos with an
+  "Artist - Song" title or from an official artist channel, and hides anything that mentions AI,
+  Suno or Udio. It is a best guess: YouTube does not mark AI music.
+- **Back** goes to the start of the song. Press it again within 4 seconds to go to the previous
+  song. **Next** goes to the next song in the queue.
+- When a new song starts, a short pop-up shows the artist and song name, also on top of Waze.
+  To turn it off: Android Settings > Apps > Car Audio > Notifications > "New song pop-up".
 - In the YouTube app, tap **Share** > **Car Audio** to play that video.
 - Lock the screen: the audio continues. Controls are in the notification and on the lock screen.
 
@@ -39,6 +46,8 @@ Android Auto shows only apps from the Play Store, unless you allow unknown sourc
 3. Tap the menu (⋮) > **Developer settings** > enable **Unknown sources**.
 
 Then **Car Audio** shows in the car's app list, with **Recently played** and **Last search**.
+Tap the search icon (🔍) on the car screen to search. Android Auto lets you type only when the
+car is parked; while you drive, it uses voice input.
 Voice search also works: "Play *something* on Car Audio". It plays the first playlist found.
 
 Without the step above, the audio still plays in the car through Bluetooth or through the
