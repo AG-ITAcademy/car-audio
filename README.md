@@ -38,7 +38,8 @@ adb install -r -i com.android.vending app-debug.apk
 ## Use
 
 - Type a search. The app searches **Playlists** by default; tap **Videos** to search videos.
-- Tap a playlist to open it, then **Play all** or **Shuffle**. Tap ▶ on a playlist to play it at once.
+- Tap a playlist to play it from the first song. Its songs show, so you can also tap a song,
+  **Play all** or **Shuffle**. Tap **+** on a playlist to add all its songs to the queue.
 - Tap a video to play it. Tap **+** to add it to the queue.
 - **Artists only** (on by default) hides AI-generated music. It keeps only videos with an
   "Artist - Song" title or from an official artist channel, and hides anything that mentions AI,
@@ -52,19 +53,32 @@ adb install -r -i com.android.vending app-debug.apk
 
 ## Android Auto
 
-Android Auto shows only apps from the Play Store, unless you allow unknown sources:
+Android Auto shows only apps from the Play Store. There are two ways to show this app.
+
+**A. Install with the Play Store as the installer (from a PC).** Uninstall first: an update
+keeps the old installer record.
+
+```
+adb uninstall ro.ag.caraudio
+adb install -i com.android.vending app-debug.apk
+adb shell pm list packages -i ro.ag.caraudio
+adb shell am force-stop com.google.android.projection.gearhead
+```
+
+The third command must show `installer=com.android.vending`. The last one restarts Android Auto.
+Use `adb install -r -i com.android.vending app-debug.apk` for later updates.
+
+**B. Allow unknown sources in Android Auto.**
 
 1. On the phone, open **Settings** > **Connected devices** > **Connection preferences** > **Android Auto**.
-2. Scroll down and tap **Version** 10 times. This enables developer mode.
-3. Tap the menu (⋮) > **Developer settings** > enable **Unknown sources**.
+2. Scroll to the bottom and tap **Version** 10 times. Tap **OK**.
+3. Tap **⋮** (top-right) > **Developer settings**. Scroll down and enable **Unknown sources**.
 
-Then **Car Audio** shows in the car's app list, with **Recently played** and **Last search**.
+Then, in the Android Auto settings, open **Customize launcher** and make sure **Car Audio** is on.
+**Car Audio** shows in the car's app list, with **Recently played** and **Last search**.
 Tap the search icon (🔍) on the car screen to search. Android Auto lets you type only when the
 car is parked; while you drive, it uses voice input.
 Voice search also works: "Play *something* on Car Audio". It plays the first playlist found.
-
-Without the step above, the audio still plays in the car through Bluetooth or through the
-Android Auto "now playing" screen of the last media app.
 
 ## When it stops working
 

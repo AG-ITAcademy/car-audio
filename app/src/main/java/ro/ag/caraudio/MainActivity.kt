@@ -167,14 +167,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun showPlaylist(playlist: MediaItem) {
+    /** Open a playlist. With [autoplay], also play it from the first video. */
+    private fun showPlaylist(playlist: MediaItem, autoplay: Boolean = false) {
         openPlaylist = playlist
         playlistVideos = emptyList()
         searching = true
         message = null
         lifecycleScope.launch {
             runCatching { withContext(Dispatchers.IO) { Library.playlist(playlist.mediaId) } }
-                .onSuccess { if (openPlaylist == playlist) playlistVideos = it }
+                .onSuccess {
+                    if (openPlaylist == playlist) playlistVideos = it
+                    if (autoplay) playAll(it)
+                }
                 .onFailure { message = "Cannot load the playlist: ${it.message}" }
             searching = false
         }
@@ -192,11 +196,16 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Play all videos of a playlist from the search results, without opening it. */
-    private fun playPlaylist(playlist: MediaItem) {
-        message = "Loading…"
+    /** Add all videos of a playlist to the end of the queue. */
+    private fun queuePlaylist(playlist: MediaItem) {
         lifecycleScope.launch {
             runCatching { withContext(Dispatchers.IO) { Library.playlist(playlist.mediaId) } }
-                .onSuccess { playAll(it) }
+                .onSuccess { videos ->
+                    val c = controller ?: return@onSuccess
+                    if (c.mediaItemCount == 0) return@onSuccess playAll(videos)
+                    c.addMediaItems(videos)
+                    message = "Added ${videos.size} songs to the queue"
+                }
                 .onFailure { message = "Cannot load the playlist: ${it.message}" }
         }
     }
@@ -323,9 +332,9 @@ class MainActivity : ComponentActivity() {
                 item.mediaMetadata.artist?.toString(),
                 if (count >= 0) "$count videos" else null,
             ).joinToString(" · "),
-            onClick = { showPlaylist(item) },
+            onClick = { showPlaylist(item, autoplay = true) },
         ) {
-            TextButton(onClick = { playPlaylist(item) }) { Text("▶", fontSize = 22.sp) }
+            TextButton(onClick = { queuePlaylist(item) }) { Text("+", fontSize = 24.sp) }
         }
     }
 
