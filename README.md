@@ -28,12 +28,7 @@ The APK is signed with the fixed key in `app/debug.keystore`, so a new build ins
 
 Or from a PC with USB debugging: `adb install -r app-debug.apk`
 
-If Android Auto does not show the app (no "Unknown sources" setting), install it from the PC
-with the Play Store as the installer:
 
-```
-adb install -r -i com.android.vending app-debug.apk
-```
 
 ## Use
 
@@ -53,26 +48,15 @@ adb install -r -i com.android.vending app-debug.apk
 
 ## Android Auto
 
-Android Auto shows only apps from the Play Store. There are two ways to show this app.
-
-**A. Install with the Play Store as the installer (from a PC).** Uninstall first: an update
-keeps the old installer record.
-
-```
-adb uninstall ro.ag.caraudio
-adb install -i com.android.vending app-debug.apk
-adb shell pm list packages -i ro.ag.caraudio
-adb shell am force-stop com.google.android.projection.gearhead
-```
-
-The third command must show `installer=com.android.vending`. The last one restarts Android Auto.
-Use `adb install -r -i com.android.vending app-debug.apk` for later updates.
-
-**B. Allow unknown sources in Android Auto.**
+Android Auto shows only apps from the Play Store, unless you allow unknown sources.
+(Installing with `adb install -i com.android.vending` does not help with current Android Auto versions.)
 
 1. On the phone, open **Settings** > **Connected devices** > **Connection preferences** > **Android Auto**.
-2. Scroll to the bottom and tap **Version** 10 times. Tap **OK**.
-3. Tap **⋮** (top-right) > **Developer settings**. Scroll down and enable **Unknown sources**.
+   This is the Android Auto settings screen, not the phone's "Developer options".
+2. Scroll to the very bottom and tap the **Version** line 10 times. Tap **OK**.
+3. On the same screen, tap **⋮** (top-right) > **Developer settings**.
+4. Scroll down to near the end of the list and enable **Unknown sources**.
+5. Restart the phone.
 
 Then, in the Android Auto settings, open **Customize launcher** and make sure **Car Audio** is on.
 **Car Audio** shows in the car's app list, with **Recently played** and **Last search**.
